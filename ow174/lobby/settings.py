@@ -1,6 +1,7 @@
 """How the lobby server is configured."""
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from ow174.paths import Paths
 
@@ -12,3 +13,4 @@ class Settings:
     dashboard_port: int = 3725  # 0 turns the dashboard off
     game_port: int = 3730  # first UDP port for game instances; 0 turns instances off
     paths: Paths = field(default_factory=Paths)
+    experiment: Path | None = None  # a reply plan for protocol experiments (ow174/lobby/experiments.py)

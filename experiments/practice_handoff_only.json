@@ -1,0 +1,26 @@
+{
+  "description": "Only the handoff (20600), host byte order, with no state or create-game reply before it. Retests the earlier no-traffic result.",
+  "on": [
+    "practice"
+  ],
+  "watch": 20,
+  "steps": [
+    {
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 1.0,
+      "value": {
+        "+0x78": true,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$token"
+          },
+          "+0x28": "$ip_host",
+          "+0x2C": "$port_host"
+        }
+      }
+    }
+  ]
+}

@@ -7,8 +7,9 @@
 // The byte-stream's send closure (0x21758a0) gates outbound on bs.state (slot1 [bs+0x20]) == 1.
 // So: FORCE bs slot1 -> 1  => the client believes connected and writes PLAINTEXT (no TLS):
 //   first a WebSocket upgrade "GET / HTTP/1.1 ... Upgrade: websocket", then BGS-over-WS frames.
-// We swap [bs+0x48].send/recv to a byte-pipe: send -> our TCP socket to 127.0.0.1:1119 (the Go
-// bnet server, --plaintext, which does the WS upgrade + BGS), recv <- that socket. TLS never runs.
+// We swap [bs+0x48].send/recv to a byte-pipe: send -> our TCP socket to 127.0.0.1:21119 (RELAY_PORT, the
+// Python BGS server in ow174/bnet, which does the WS upgrade + BGS), recv <- that socket. TLS never runs.
+// Optional: with OW174_NETLOG=1 it also logs every address the game dials (see "network log" below).
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -157,6 +158,136 @@ static void scan(){
         a=rb+rs;
     }
 }
+// ---- network log (opt-in: environment variable OW174_NETLOG=1, set by `py -m ow174 --experiment`) ----
+// Logs every address the game itself dials or sends to (connect, WSAConnect, sendto, WSASendTo), so a
+// game-server handoff experiment can tell "the game sent nothing" from "the game sent it somewhere else".
+// The game's own pointers to these Winsock functions are redirected: its import table, plus any copy in
+// the image's writable data (a table filled by GetProcAddress). This DLL's own calls are not affected.
+typedef int (WSAAPI *connect_t)(SOCKET,const sockaddr*,int);
+typedef int (WSAAPI *wsaconnect_t)(SOCKET,const sockaddr*,int,LPWSABUF,LPWSABUF,LPQOS,LPQOS);
+typedef int (WSAAPI *sendto_t)(SOCKET,const char*,int,int,const sockaddr*,int);
+typedef int (WSAAPI *wsasendto_t)(SOCKET,LPWSABUF,DWORD,LPDWORD,DWORD,const sockaddr*,int,LPWSAOVERLAPPED,
+                                  LPWSAOVERLAPPED_COMPLETION_ROUTINE);
+static connect_t o_connect=nullptr; static wsaconnect_t o_wsaconnect=nullptr;
+static sendto_t o_sendto=nullptr; static wsasendto_t o_wsasendto=nullptr;
+static bool g_netlog=false; static volatile LONG g_netPatched=0;
+
+struct NetSeen{ char key[96]; LONG count; };
+static NetSeen g_seen[128]; static int g_nSeen=0; static CRITICAL_SECTION g_netCs;
+
+static void formatAddr(const sockaddr* to,int len,char* out,size_t n){
+    out[0]=0;
+    __try{
+        if(!to||len<(int)sizeof(sockaddr)){ snprintf(out,n,"(no address)"); return; }
+        if(to->sa_family==AF_INET&&len>=(int)sizeof(sockaddr_in)){
+            const sockaddr_in* a=(const sockaddr_in*)to; const u8* b=(const u8*)&a->sin_addr;
+            snprintf(out,n,"%u.%u.%u.%u:%u",b[0],b[1],b[2],b[3],ntohs(a->sin_port)); return;
+        }
+        if(to->sa_family==AF_INET6&&len>=(int)sizeof(sockaddr_in6)){
+            const sockaddr_in6* a=(const sockaddr_in6*)to; const u8* b=(const u8*)&a->sin6_addr;
+            snprintf(out,n,"[%02x%02x:%02x%02x:..:%02x%02x:%02x%02x]:%u",b[0],b[1],b[2],b[3],b[12],b[13],b[14],b[15],
+                     ntohs(a->sin6_port)); return;
+        }
+        snprintf(out,n,"(family %u)",to->sa_family);
+    }__except(EXCEPTION_EXECUTE_HANDLER){ snprintf(out,n,"(unreadable address)"); }
+}
+
+// Log the first call per (function, destination), then every 1000th, so a busy socket does not flood.
+static void netNote(const char* fn,SOCKET s,const sockaddr* to,int len,long bytes){
+    char addr[64]; formatAddr(to,len,addr,sizeof addr);
+    char key[96]; snprintf(key,sizeof key,"%s %s",fn,addr);
+    LONG count=0;
+    EnterCriticalSection(&g_netCs);
+    int i=0; for(;i<g_nSeen;i++) if(!strcmp(g_seen[i].key,key)) break;
+    if(i==g_nSeen&&g_nSeen<(int)(sizeof g_seen/sizeof g_seen[0])){ strcpy(g_seen[i].key,key); g_seen[i].count=0; g_nSeen++; }
+    if(i<g_nSeen) count=++g_seen[i].count;
+    LeaveCriticalSection(&g_netCs);
+    if(count==1||count%1000==0) L("NET %s -> %s socket=%llu bytes=%ld (call #%ld to this address)",
+                                  fn,addr,(unsigned long long)s,bytes,count);
+}
+
+static int WSAAPI hk_connect(SOCKET s,const sockaddr* to,int len){
+    netNote("connect",s,to,len,0); return o_connect(s,to,len);
+}
+static int WSAAPI hk_wsaconnect(SOCKET s,const sockaddr* to,int len,LPWSABUF a,LPWSABUF b,LPQOS c,LPQOS d){
+    netNote("WSAConnect",s,to,len,0); return o_wsaconnect(s,to,len,a,b,c,d);
+}
+static int WSAAPI hk_sendto(SOCKET s,const char* buf,int n,int flags,const sockaddr* to,int len){
+    if(to) netNote("sendto",s,to,len,n); return o_sendto(s,buf,n,flags,to,len);
+}
+static int WSAAPI hk_wsasendto(SOCKET s,LPWSABUF bufs,DWORD count,LPDWORD sent,DWORD flags,const sockaddr* to,int len,
+                               LPWSAOVERLAPPED ov,LPWSAOVERLAPPED_COMPLETION_ROUTINE done){
+    if(to){ long total=0; __try{ for(DWORD i=0;i<count;i++) total+=(long)bufs[i].len; }__except(EXCEPTION_EXECUTE_HANDLER){}
+            netNote("WSASendTo",s,to,len,total); }
+    return o_wsasendto(s,bufs,count,sent,flags,to,len,ov,done);
+}
+
+struct NetHook{ const char* name; void** original; void* hook; u64 real; };
+static NetHook g_hooks[]={
+    {"connect",(void**)&o_connect,(void*)&hk_connect,0},
+    {"WSAConnect",(void**)&o_wsaconnect,(void*)&hk_wsaconnect,0},
+    {"sendto",(void**)&o_sendto,(void*)&hk_sendto,0},
+    {"WSASendTo",(void**)&o_wsasendto,(void*)&hk_wsasendto,0},
+};
+static const int N_HOOKS=(int)(sizeof g_hooks/sizeof g_hooks[0]);
+
+// Replace one pointer slot if it holds a real Winsock function. Returns 1 when it was replaced.
+static int patchSlot(u64* slot){
+    u64 value=rd64(slot,0); if(!value) return 0;
+    for(int h=0;h<N_HOOKS;h++){
+        if(value!=g_hooks[h].real) continue;
+        DWORD old; if(!VirtualProtect(slot,8,PAGE_READWRITE,&old)) return 0;
+        int ok=0; __try{ *(volatile u64*)slot=(u64)g_hooks[h].hook; ok=1; }__except(EXCEPTION_EXECUTE_HANDLER){}
+        VirtualProtect(slot,8,old,&old);
+        if(ok) L("NET hooked %s at image rva %llX",g_hooks[h].name,(unsigned long long)((u64)slot-g_base));
+        return ok;
+    }
+    return 0;
+}
+
+// Scan the import table and the writable, non-executable sections of the game image.
+static int netPatchImage(){
+    int patched=0;
+    __try{
+        IMAGE_NT_HEADERS* nt=(IMAGE_NT_HEADERS*)(g_base+((IMAGE_DOS_HEADER*)g_base)->e_lfanew);
+        IMAGE_DATA_DIRECTORY dir=nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+        if(dir.VirtualAddress){
+            IMAGE_IMPORT_DESCRIPTOR* d=(IMAGE_IMPORT_DESCRIPTOR*)(g_base+dir.VirtualAddress);
+            for(int guard=0;d->Name&&guard<4096;d++,guard++){
+                u64* thunk=(u64*)(g_base+d->FirstThunk);
+                for(int k=0;thunk[k]&&k<65536;k++) patched+=patchSlot(&thunk[k]);
+            }
+        }
+        IMAGE_SECTION_HEADER* sec=IMAGE_FIRST_SECTION(nt);
+        for(int i=0;i<nt->FileHeader.NumberOfSections;i++){
+            DWORD ch=sec[i].Characteristics;
+            if(!(ch&IMAGE_SCN_MEM_WRITE)||(ch&IMAGE_SCN_MEM_EXECUTE)) continue;
+            u64 start=g_base+sec[i].VirtualAddress, end=start+(sec[i].Misc.VirtualSize&~7ULL);
+            for(u64 p=start;p+8<=end;p+=8){
+                u64 v=rd64((void*)p,0);
+                for(int h=0;h<N_HOOKS;h++) if(v==g_hooks[h].real){ patched+=patchSlot((u64*)p); break; }
+            }
+        }
+    }__except(EXCEPTION_EXECUTE_HANDLER){ L("NET image scan faulted; %d slots hooked before it",patched); }
+    return patched;
+}
+
+static void netInit(){
+    wchar_t flag[8]={0};
+    DWORD n=GetEnvironmentVariableW(L"OW174_NETLOG",flag,8);
+    g_netlog=(n>0&&n<8&&flag[0]==L'1');
+    if(!g_netlog) return;
+    InitializeCriticalSection(&g_netCs);
+    HMODULE ws=GetModuleHandleW(L"ws2_32.dll"); if(!ws) ws=LoadLibraryW(L"ws2_32.dll");
+    if(!ws){ L("NET log off: ws2_32.dll not loadable"); g_netlog=false; return; }
+    for(int h=0;h<N_HOOKS;h++){
+        g_hooks[h].real=(u64)GetProcAddress(ws,g_hooks[h].name);
+        *g_hooks[h].original=(void*)g_hooks[h].real;   // hooks always call the real function
+    }
+    LONG got=netPatchImage(); InterlockedExchangeAdd(&g_netPatched,got);
+    L("NET log on: %ld Winsock pointers of the game redirected",got);
+}
+
 static DWORD WINAPI worker(LPVOID){
     InitializeCriticalSection(&g_cs);InitializeCriticalSection(&g_mapCs);
     wchar_t modulePath[32768] = {};
@@ -174,8 +305,15 @@ static DWORD WINAPI worker(LPVOID){
     g_base=(u64)GetModuleHandleW(L"Overwatch.exe");if(!g_base)g_base=(u64)GetModuleHandleW(NULL);
     IMAGE_DOS_HEADER* dos=(IMAGE_DOS_HEADER*)g_base;IMAGE_NT_HEADERS* nt=(IMAGE_NT_HEADERS*)(g_base+dos->e_lfanew);g_imgHi=g_base+nt->OptionalHeader.SizeOfImage;
     g_bsVA=g_base+BS_VT;
-    L("==== owwfd_relay (plaintext pipe -> 127.0.0.1:%u) base=%016llX bsVt=%016llX ====",SRV_PORT,(unsigned long long)g_base,(unsigned long long)g_bsVA);
-    for(int loop=0;;loop++){ scan(); if((loop%80)==0)L("[poll] loop=%d swaps=%ld send=%ld recv=%ld stateCalls=%ld relays=%d err=%ld",loop,g_swaps,g_send,g_recv,g_stateCalls,g_nRelays,g_relayErr); Sleep(8);}
+    L("==== owwfd_relay (plaintext pipe -> 127.0.0.1:%u) base=%016llX bsVt=%016llX ====",RELAY_PORT,(unsigned long long)g_base,(unsigned long long)g_bsVA);
+    netInit();
+    for(int loop=0;;loop++){
+        scan();
+        if((loop%80)==0)L("[poll] loop=%d swaps=%ld send=%ld recv=%ld stateCalls=%ld relays=%d err=%ld net=%ld",loop,g_swaps,g_send,g_recv,g_stateCalls,g_nRelays,g_relayErr,g_netPatched);
+        // Winsock pointers the game fills in later (GetProcAddress at runtime): look again every ~5 s.
+        if(g_netlog&&loop>0&&(loop%600)==0){ LONG got=netPatchImage(); if(got){ InterlockedExchangeAdd(&g_netPatched,got); L("NET %ld more pointers redirected",got);} }
+        Sleep(8);
+    }
     return 0;
 }
 BOOL WINAPI DllMain(HINSTANCE h,DWORD reason,LPVOID){if(reason==DLL_PROCESS_ATTACH){g_module=h;DisableThreadLibraryCalls(h);HANDLE t=CreateThread(nullptr,0,worker,nullptr,0,nullptr);if(t)CloseHandle(t);}return TRUE;}

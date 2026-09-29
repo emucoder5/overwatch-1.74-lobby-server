@@ -1,7 +1,8 @@
 """Queueing for a game, and the group finder.
 
 No real match is created: the game connection is still blocked (see docs/STATE.md). A queue request
-starts a local game-server process that only records what it receives.
+starts a local game-server process that only records what it receives. With --experiment, the server
+also sends the game a scripted reply sequence (ow174/lobby/experiments.py).
 """
 
 import json
@@ -55,6 +56,9 @@ def _allocate_game(session: Session, mode: int, activity: str) -> None:
         f"[MM] {activity}: instance {instance.directory.name}, PID {instance.process.pid}, "
         f"UDP 127.0.0.1:{instance.port}, waiting for the game client"
     )
+    experiments = session.server.experiments
+    if experiments is not None:
+        experiments.start(session, instance, activity)
 
 
 # The group finder messages (52200-52205) only go from client to server. The client closes the

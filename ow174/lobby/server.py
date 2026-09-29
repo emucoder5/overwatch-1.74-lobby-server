@@ -11,6 +11,7 @@ from ow174.catalog.templates import RetailTemplates
 from ow174.content import Content
 from ow174.jam.codec import Schemas
 from ow174.jam.handshake import server_handshake
+from ow174.lobby.experiments import ExperimentRunner
 from ow174.lobby.handlers import build_router
 from ow174.lobby.research import ClientRecorder
 from ow174.lobby.session import Session
@@ -40,6 +41,9 @@ class LobbyServer:
         self.matches: MatchManager | None = None
         if settings.game_port > 0:
             self.matches = MatchManager(paths.matches, base_port=settings.game_port)
+        self.experiments: ExperimentRunner | None = None
+        if settings.experiment is not None:
+            self.experiments = ExperimentRunner(settings.experiment, self.schemas)
         self.accounts = Accounts(paths.profiles, paths.template)
         self.social = Social(self.accounts, self.content)
         self.recorder = ClientRecorder(paths.client_log)

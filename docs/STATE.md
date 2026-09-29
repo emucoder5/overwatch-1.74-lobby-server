@@ -13,10 +13,11 @@
 - Weekly challenges (Tracer, Symmetra): the data is in place, but the game does not pick them up on its own, and their banner and popup do not show.
 - Practice Range and matchmaking: the game sends its requests (24000 for the Practice Range, 44100 to search, 44102 to cancel), and the server starts or stops a worker for each. No match actually starts.
 - `tools/probe_practice.py` can put the game into the "searching" state (message 53000 with state 4, answered by 52903). It resets the game back to idle afterwards.
+- `--experiment <plan>` answers the Practice Range request with a scripted sequence (see `experiments/README.md`): 53000, then the create-game reply candidate 23320, then the handoff 20600 pointing at the local instance, in either byte order. It logs whether the game sent UDP packets, and in retail mode the relay logs every address the game dials. Not yet tried against the game.
 
 ## Does not work yet
 
-- Joining a match. Sending a server address (message 20600) gave no network traffic from the game.
+- Joining a match. Sending a server address (message 20600) gave no network traffic from the game. That test only watched the local game server, so a wrongly encoded address would have looked the same; the experiment plans retest it with both byte orders and the relay's network log.
 - Competitive seasons.
 
 Do not describe this server as able to play matches.

@@ -9,6 +9,7 @@ Modes:
 
 import argparse
 import logging
+import os
 import sys
 import threading
 from pathlib import Path
@@ -19,6 +20,7 @@ from ow174.launcher import LaunchError
 from ow174.launcher.game import close_running_copy, find_game, inject_relay, start_game
 from ow174.launcher.relay import ensure_relay_dll
 from ow174.launcher.requirements import ensure_requirements
+from ow174.lobby.experiments import PlanError, resolve_plan_path
 from ow174.lobby.research import watch_inject_file
 from ow174.lobby.server import LobbyServer
 from ow174.lobby.settings import Settings
@@ -73,6 +75,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--save", type=Path, default=defaults.paths.template, help="template profile for new accounts"
     )
+    parser.add_argument(
+        "--experiment",
+        metavar="PLAN",
+        help="reply to Practice Range requests with a scripted plan: a name in experiments/ "
+        "(for example 'practice') or a JSON file",
+    )
     return parser.parse_args(argv)
 
 
@@ -107,6 +115,7 @@ def run(args: argparse.Namespace) -> None:
         dashboard_port=args.dashboard_port,
         game_port=args.game_port,
         paths=Paths(template=args.save),
+        experiment=resolve_plan_path(args.experiment) if args.experiment else None,
     )
     game = relay = None
     if args.mode != "server":
@@ -118,6 +127,16 @@ def run(args: argparse.Namespace) -> None:
 
     load_or_create_profile(settings.paths.template)
     server = LobbyServer(settings)
+    if server.experiments is not None:
+        try:
+            plan = server.experiments.check()
+        except PlanError as error:
+            raise LaunchError(str(error)) from error
+        if settings.game_port <= 0:
+            raise LaunchError("--experiment needs game instances; do not combine it with --game-port 0")
+        log.info("[exp] Experiment plan '%s' (%d steps): %s", plan.name, len(plan.steps), plan.description)
+        # The game inherits this: the relay DLL then logs every address the game dials (retail mode).
+        os.environ["OW174_NETLOG"] = "1"
     listener = _bind(server)
     if settings.dashboard_port > 0:
         start_dashboard(server, port=settings.dashboard_port)

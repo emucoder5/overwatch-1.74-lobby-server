@@ -16,7 +16,8 @@ A plan is a JSON file:
 Each step starts from the message's empty value (all zeros) and overrides the fields in "value". A
 field that the message does not have is an error, so typos show up at once. "after" is the delay in
 seconds since the previous step. A step with "unless_connected": true is skipped once the game has
-sent the instance a UDP packet.
+sent the instance a UDP packet. While a run is going, the game's repeats of the same request are
+counted but do not restart it.
 
 String values that start with "$" are replaced:
 
@@ -185,12 +186,13 @@ def packets_received(instance: "MatchInstance") -> int:
 
 
 class ExperimentRunner:
-    """Runs a plan in the background for each request; a newer request stops the older run."""
+    """Runs a plan in the background per client; repeated requests during a run are only counted."""
 
     def __init__(self, plan_path: Path, schemas: "Schemas") -> None:
         self.plan_path = plan_path
         self.schemas = schemas
         self._runs: dict[int, int] = {}  # connection id -> generation of its current run
+        self._repeats: dict[int, int] = {}  # connection id -> requests ignored while its run is going
         self._lock = threading.Lock()
 
     def check(self) -> Plan:
@@ -206,8 +208,16 @@ class ExperimentRunner:
         if activity not in plan.on:
             return False
         with self._lock:
+            # The game repeats its request while it waits. Restarting the plan each time would keep it
+            # from ever reaching the later steps, so repeats are counted and ignored until the run ends.
+            if session.conn_id in self._repeats:
+                self._repeats[session.conn_id] += 1
+                if self._repeats[session.conn_id] == 1:
+                    session.log("[exp] The game repeated its request; ignoring repeats until this run ends")
+                return False
             generation = self._runs.get(session.conn_id, 0) + 1
             self._runs[session.conn_id] = generation
+            self._repeats[session.conn_id] = 0
         threading.Thread(
             target=self._run,
             args=(session, instance, plan, generation),
@@ -243,6 +253,10 @@ class ExperimentRunner:
             self._watch(session, instance, plan, generation)
         except OSError:
             session.log("[exp] Stopped: the client disconnected")
+        finally:
+            with self._lock:
+                if self._runs.get(session.conn_id) == generation:
+                    self._repeats.pop(session.conn_id, None)
 
     def _watch(self, session: "Session", instance: "MatchInstance", plan: Plan, generation: int) -> None:
         deadline = time.monotonic() + plan.watch
@@ -251,6 +265,10 @@ class ExperimentRunner:
                 break
             time.sleep(0.25)
         count = packets_received(instance)
+        with self._lock:
+            repeats = self._repeats.get(session.conn_id, 0)
+        if repeats:
+            session.log(f"[exp] The game repeated its request {repeats} time(s) during this run")
         if count:
             session.log(
                 f"[exp] RESULT: the game sent {count} UDP packet(s) to the instance. "

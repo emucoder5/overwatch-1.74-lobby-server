@@ -110,6 +110,7 @@ class PracticeExperimentTests(unittest.TestCase):
 
         session.log = log
         session.send = lambda crc, msg_id, value: self.sent.append((crc, msg_id, value)) or True
+        self.session = session
         session.dispatch(1, 0, PRACTICE_BODY)
         return self.matches.snapshot()[0]
 
@@ -129,6 +130,21 @@ class PracticeExperimentTests(unittest.TestCase):
         self.assertEqual(value["+0x80"]["+0x28"], 0x7F000001)
         self.assertEqual(value["+0x80"]["+0x2C"], state["port"])
         self.assertIn("no UDP packets", self.logs[-1])
+
+    def test_repeated_requests_do_not_restart_the_plan(self):
+        self.start(
+            [
+                {"send": ["1CFB43CD", 53000]},
+                {"send": ["074DAD18", 20600], "after": 0.3},
+            ],
+            watch=0.1,
+        )
+        session = self.session
+        for _ in range(3):
+            session.dispatch(1, 0, PRACTICE_BODY)
+        self.assertTrue(self.done.wait(5), self.logs)
+        self.assertEqual([m[1] for m in self.sent], [53000, 20600])
+        self.assertTrue(any("repeated its request 3 time" in line for line in self.logs), self.logs)
 
     def test_udp_from_the_game_is_reported_and_skips_the_idle_reset(self):
         state = self.start(

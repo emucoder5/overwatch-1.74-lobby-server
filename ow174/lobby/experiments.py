@@ -15,9 +15,13 @@ A plan is a JSON file:
 
 Each step starts from the message's empty value (all zeros) and overrides the fields in "value". A
 field that the message does not have is an error, so typos show up at once. "after" is the delay in
-seconds since the previous step. A step with "unless_connected": true is skipped once the game has
-sent the instance a UDP packet. While a run is going, the game's repeats of the same request are
-counted but do not restart it.
+seconds since the previous step, and "label" names the step in the log. A step with
+"unless_connected": true is skipped once the game has sent the instance a UDP packet. While a run is
+going, the game's repeats of the same request are counted but do not restart it.
+
+A step {"wait": 8} sends nothing: it waits up to 8 seconds for UDP packets from the game. If they
+arrive, the run ends there and the RESULT names the last step sent before them. That lets one plan try
+several variants of a message in a row.
 
 String values that start with "$" are replaced:
 
@@ -26,6 +30,10 @@ String values that start with "$" are replaced:
     $port_host  the instance UDP port
     $port_net   the port with its two bytes swapped
     $token      a random 64-bit number, the same for every step of one run
+    $key_a      32 random bytes (for a fixed byte-array field), the same for every step of one run
+    $key_b      another 32 random bytes
+    $ip_text    the instance address as text, "127.0.0.1", for a fixed char-array field
+    $addr_text  the address and port as text, "127.0.0.1:3730"
 
 The plan is read again for every request, so it can be edited while the server runs. The results go
 to the log: each step sent, then whether the game sent UDP packets to the instance.
@@ -65,6 +73,8 @@ class Step:
     value: dict
     after: float = 0.0
     unless_connected: bool = False
+    label: str = ""
+    wait: float | None = None  # a wait step sends nothing; see the module docstring
 
 
 @dataclass
@@ -110,6 +120,12 @@ def load_plan(path: Path, schemas: "Schemas") -> Plan:
     sample = placeholders("127.0.0.1", 3730, 0x0123456789ABCDEF)
     for number, raw in enumerate(data["steps"], start=1):
         where = f"{path} step {number}"
+        if isinstance(raw, dict) and "wait" in raw:
+            if set(raw) - {"wait", "label"}:
+                raise PlanError(f'{where}: a wait step takes only "wait" and "label"')
+            wait = _delay(raw["wait"], f"{where}: wait")
+            plan.steps.append(Step(0, 0, {}, label=str(raw.get("label", "")), wait=wait))
+            continue
         if not isinstance(raw, dict) or not isinstance(raw.get("send"), list) or len(raw["send"]) != 2:
             raise PlanError(f'{where}: "send" must be ["<crc hex>", <message id>]')
         try:
@@ -129,6 +145,7 @@ def load_plan(path: Path, schemas: "Schemas") -> Plan:
             value,
             _delay(raw.get("after", 0), f"{where}: after"),
             bool(raw.get("unless_connected")),
+            str(raw.get("label", "")),
         )
         try:
             build_value(schemas, step, sample)
@@ -138,14 +155,19 @@ def load_plan(path: Path, schemas: "Schemas") -> Plan:
     return plan
 
 
-def placeholders(host: str, port: int, token: int) -> dict[str, int]:
+def placeholders(host: str, port: int, token: int) -> dict:
     packed = socket.inet_aton(host)
+    keys = random.Random(token)
     return {
         "$ip_host": int.from_bytes(packed, "big"),
         "$ip_net": int.from_bytes(packed, "little"),
         "$port_host": port,
         "$port_net": int.from_bytes(port.to_bytes(2, "big"), "little"),
         "$token": token,
+        "$key_a": list(keys.randbytes(32)),
+        "$key_b": list(keys.randbytes(32)),
+        "$ip_text": list(host.encode("ascii")),
+        "$addr_text": list(f"{host}:{port}".encode("ascii")),
     }
 
 
@@ -154,7 +176,7 @@ def _merge(base, override, names: dict[str, int], path: str):
     if isinstance(override, str) and override.startswith("$"):
         if override not in names:
             raise ValueError(f"{path}: unknown placeholder {override} (known: {', '.join(names)})")
-        return names[override]
+        return copy.copy(names[override])
     if isinstance(override, dict):
         if base is None:  # an element of an array the plan gives in full
             return {key: _merge(None, value, names, f"{path}{key}.") for key, value in override.items()}
@@ -237,20 +259,32 @@ class ExperimentRunner:
             f"[exp] Plan '{plan.name}': {len(plan.steps)} steps, instance UDP 127.0.0.1:{instance.port}, "
             f"token 0x{token:016X}. {plan.description}"
         )
+        last_sent = "nothing"
         try:
             for number, step in enumerate(plan.steps, start=1):
+                label = f"step {number}/{len(plan.steps)}"
+                if step.label:
+                    label += f" '{step.label}'"
+                if step.wait is not None:
+                    if self._wait_for_packets(instance, step.wait, session, generation):
+                        session.log(f"[exp] {label}: UDP packets arrived after {last_sent}; ending the run")
+                        break
+                    session.log(f"[exp] {label}: no UDP packets within {step.wait:g}s after {last_sent}")
+                    continue
                 time.sleep(step.after)
                 if not self._current(session, generation):
                     session.log("[exp] Stopped: a newer request replaced this run")
                     return
-                label = f"step {number}/{len(plan.steps)} {step.crc:08X}/{step.msg_id}"
+                label += f" {step.crc:08X}/{step.msg_id}"
                 if step.unless_connected and packets_received(instance):
                     session.log(f"[exp] {label} skipped: the game is already sending UDP packets")
                     continue
                 value = build_value(self.schemas, step, names)
                 sent = session.send(step.crc, step.msg_id, value)
                 session.log(f"[exp] {label} {'sent' if sent else 'NOT sent (protocol not announced)'}")
-            self._watch(session, instance, plan, generation)
+                if sent:
+                    last_sent = label
+            self._watch(session, instance, plan, generation, last_sent)
         except OSError:
             session.log("[exp] Stopped: the client disconnected")
         finally:
@@ -258,12 +292,20 @@ class ExperimentRunner:
                 if self._runs.get(session.conn_id) == generation:
                     self._repeats.pop(session.conn_id, None)
 
-    def _watch(self, session: "Session", instance: "MatchInstance", plan: Plan, generation: int) -> None:
-        deadline = time.monotonic() + plan.watch
+    def _wait_for_packets(
+        self, instance: "MatchInstance", seconds: float, session: "Session", generation: int
+    ) -> bool:
+        deadline = time.monotonic() + seconds
         while time.monotonic() < deadline and self._current(session, generation):
             if packets_received(instance):
-                break
+                return True
             time.sleep(0.25)
+        return bool(packets_received(instance))
+
+    def _watch(
+        self, session: "Session", instance: "MatchInstance", plan: Plan, generation: int, last_sent: str
+    ) -> None:
+        self._wait_for_packets(instance, plan.watch, session, generation)
         count = packets_received(instance)
         with self._lock:
             repeats = self._repeats.get(session.conn_id, 0)
@@ -271,8 +313,8 @@ class ExperimentRunner:
             session.log(f"[exp] The game repeated its request {repeats} time(s) during this run")
         if count:
             session.log(
-                f"[exp] RESULT: the game sent {count} UDP packet(s) to the instance. "
-                f"They are in {instance.directory / 'packets.jsonl'}"
+                f"[exp] RESULT: the game sent {count} UDP packet(s) to the instance; the last step sent "
+                f"before them was {last_sent}. They are in {instance.directory / 'packets.jsonl'}"
             )
         else:
             session.log(f"[exp] RESULT: no UDP packets reached the instance within {plan.watch:g}s")

@@ -15,6 +15,7 @@ from ow174.jam.codec import Schemas
 from ow174.lobby.experiments import (
     ExperimentRunner,
     PlanError,
+    build_value,
     load_plan,
     placeholders,
     resolve_plan_path,
@@ -26,7 +27,7 @@ from ow174.matches.runtime import MatchManager
 CUSTOM = 0xA6E53896
 HANDOFF = 0x074DAD18
 PRACTICE_BODY = bytes.fromhex("020004000000")
-SHIPPED_PLANS = ("practice", "practice_net_order", "practice_handoff_only")
+SHIPPED_PLANS = ("practice", "practice_net_order", "practice_handoff_only", "practice_sweep")
 
 
 def write_plan(directory, steps, **extra):
@@ -53,6 +54,27 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(names["$port_host"], 0x0E92)
         self.assertEqual(names["$port_net"], 0x920E)
         self.assertEqual(names["$token"], 7)
+
+    def test_byte_placeholders_fill_fixed_arrays(self):
+        names = placeholders("127.0.0.1", 3730, 7)
+        self.assertEqual(bytes(names["$ip_text"]), b"127.0.0.1")
+        self.assertEqual(bytes(names["$addr_text"]), b"127.0.0.1:3730")
+        self.assertEqual(len(names["$key_a"]), 32)
+        self.assertNotEqual(names["$key_a"], names["$key_b"])
+        path = write_plan(
+            self.tmp.name,
+            [{"send": ["074DAD18", 20600], "value": {"+0x80": {"+0x2E": "$ip_text", "+0xAE": "$key_a"}}}],
+        )
+        body = self.schemas.encode(
+            HANDOFF, 20600, build_value(self.schemas, load_plan(path, self.schemas).steps[0], names)
+        )
+        self.assertIn(b"127.0.0.1\x00", body)
+        self.assertIn(bytes(names["$key_a"]), body)
+
+    def test_a_wait_step_takes_only_wait_and_label(self):
+        path = write_plan(self.tmp.name, [{"wait": 1, "send": ["074DAD18", 20600]}])
+        with self.assertRaisesRegex(PlanError, "wait step"):
+            load_plan(path, self.schemas)
 
     def test_a_misspelled_field_is_refused(self):
         path = write_plan(self.tmp.name, [{"send": ["074DAD18", 20600], "value": {"+0x80": {"+0x2D": 1}}}])
@@ -162,6 +184,29 @@ class PracticeExperimentTests(unittest.TestCase):
         self.assertEqual([m[1] for m in self.sent], [20600])
         self.assertTrue(any("skipped" in line for line in self.logs), self.logs)
         self.assertIn("1 UDP packet", self.logs[-1])
+
+    def test_a_wait_step_ends_the_run_at_the_variant_the_game_answers(self):
+        state = self.start(
+            [
+                {"label": "first", "send": ["074DAD18", 20600], "unless_connected": True},
+                {"wait": 0.3},
+                {"label": "second", "send": ["074DAD18", 20600], "unless_connected": True},
+                {"wait": 5},
+                {"label": "third", "send": ["074DAD18", 20600], "unless_connected": True},
+            ],
+            watch=0.1,
+        )
+        deadline = time.monotonic() + 5
+        while len(self.sent) < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as game:
+            game.sendto(b"hello", ("127.0.0.1", state["port"]))
+        self.assertTrue(self.done.wait(5), self.logs)
+        self.assertEqual(len(self.sent), 2)
+        self.assertTrue(
+            any("no UDP packets within 0.3s after step 1/5 'first'" in line for line in self.logs)
+        )
+        self.assertIn("step 3/5 'second'", self.logs[-1])
 
 
 if __name__ == "__main__":

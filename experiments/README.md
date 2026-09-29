@@ -7,8 +7,10 @@ here makes the Practice Range playable yet.
 ## Run one
 
 ```
-py -m ow174 --mode retail --experiment practice
+py -m ow174 --mode retail --experiment practice_sweep
 ```
+
+or double-click `PRACTICE_TEST.bat`, which runs `practice_sweep`.
 
 Then click Practice Range in the game. Close the game and the black window before trying the next
 plan.
@@ -18,6 +20,26 @@ plan.
 | `practice` | searching state (53000), create-game reply (23320), handoff (20600) with the address in host byte order, then idle again after 20 s if nothing connected |
 | `practice_net_order` | the same, with the address and port in network byte order |
 | `practice_handoff_only` | only the handoff (20600), to retest the earlier "no traffic" result |
+| `practice_sweep` | searching state and create-game reply, then six handoff variants 8 s apart, stopping at the first one the game answers with UDP (see below) |
+
+### Why the sweep
+
+In the second game test the game got the handoff but sent no UDP packets. The earlier plans left most
+of the handoff empty: its three IDs, two 64-byte text fields, two 32-byte fields that look like
+connection keys, and its last flag. They also set the flag before the address to on, which may mean
+"failed" or "cancelled". The sweep tries, in order:
+
+1. every field filled, first flag off, host byte order
+2. the same in network byte order
+3. every field filled, first flag on, host byte order
+4. the same in network byte order
+5. only the ID and address, first flag off, host byte order
+6. the same in network byte order
+
+"Every field filled" means the three IDs set to the run's token, the address text `127.0.0.1` and
+`127.0.0.1:<port>`, two random 32-byte keys, and the last flag on. The log has one line per variant, and
+the RESULT line names the variant sent just before the first UDP packet. If the game only reacts to its
+first handoff, reorder the steps in `practice_sweep.json`, or keep one variant and delete the rest.
 
 A plan is re-read on every request, so you can edit its JSON while the server runs. To try your own
 plan, copy one and start with `--experiment path\to\my_plan.json`. The field list and the

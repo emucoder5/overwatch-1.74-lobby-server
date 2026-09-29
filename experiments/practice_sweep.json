@@ -1,0 +1,226 @@
+{
+  "description": "Searching state and create-game reply, then six handoff (20600) variants, 8 s apart: every field filled (IDs, address text, 32-byte keys, last flag) or only the address, with the leading flag off or on, in both byte orders. Ends at the first variant the game answers with UDP.",
+  "on": [
+    "practice"
+  ],
+  "watch": 2,
+  "steps": [
+    {
+      "send": [
+        "1CFB43CD",
+        53000
+      ],
+      "after": 0,
+      "value": {
+        "+0x78": {
+          "+0x60": 4
+        },
+        "+0xE8": "$token"
+      }
+    },
+    {
+      "send": [
+        "21286B49",
+        23320
+      ],
+      "after": 0.5,
+      "value": {
+        "+0x78": 0,
+        "+0x80": {
+          "+0x60": 4
+        },
+        "+0xE8": {
+          "+0x0": {
+            "+0x0": {
+              "+0x0": "$token"
+            }
+          }
+        }
+      }
+    },
+    {
+      "label": "all fields, flag off, host order",
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 0.5,
+      "unless_connected": true,
+      "value": {
+        "+0x78": false,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$token"
+          },
+          "+0x28": "$ip_host",
+          "+0x2C": "$port_host",
+          "+0x10": "$token",
+          "+0x18": "$token",
+          "+0x20": "$token",
+          "+0x2E": "$ip_text",
+          "+0x6E": "$addr_text",
+          "+0xAE": "$key_a",
+          "+0xCE": "$key_b",
+          "+0xEE": true
+        }
+      }
+    },
+    {
+      "label": "all fields, flag off, host order",
+      "wait": 8
+    },
+    {
+      "label": "all fields, flag off, network order",
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 0.5,
+      "unless_connected": true,
+      "value": {
+        "+0x78": false,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$token"
+          },
+          "+0x28": "$ip_net",
+          "+0x2C": "$port_net",
+          "+0x10": "$token",
+          "+0x18": "$token",
+          "+0x20": "$token",
+          "+0x2E": "$ip_text",
+          "+0x6E": "$addr_text",
+          "+0xAE": "$key_a",
+          "+0xCE": "$key_b",
+          "+0xEE": true
+        }
+      }
+    },
+    {
+      "label": "all fields, flag off, network order",
+      "wait": 8
+    },
+    {
+      "label": "all fields, flag on, host order",
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 0.5,
+      "unless_connected": true,
+      "value": {
+        "+0x78": true,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$token"
+          },
+          "+0x28": "$ip_host",
+          "+0x2C": "$port_host",
+          "+0x10": "$token",
+          "+0x18": "$token",
+          "+0x20": "$token",
+          "+0x2E": "$ip_text",
+          "+0x6E": "$addr_text",
+          "+0xAE": "$key_a",
+          "+0xCE": "$key_b",
+          "+0xEE": true
+        }
+      }
+    },
+    {
+      "label": "all fields, flag on, host order",
+      "wait": 8
+    },
+    {
+      "label": "all fields, flag on, network order",
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 0.5,
+      "unless_connected": true,
+      "value": {
+        "+0x78": true,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$token"
+          },
+          "+0x28": "$ip_net",
+          "+0x2C": "$port_net",
+          "+0x10": "$token",
+          "+0x18": "$token",
+          "+0x20": "$token",
+          "+0x2E": "$ip_text",
+          "+0x6E": "$addr_text",
+          "+0xAE": "$key_a",
+          "+0xCE": "$key_b",
+          "+0xEE": true
+        }
+      }
+    },
+    {
+      "label": "all fields, flag on, network order",
+      "wait": 8
+    },
+    {
+      "label": "address only, flag off, host order",
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 0.5,
+      "unless_connected": true,
+      "value": {
+        "+0x78": false,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$token"
+          },
+          "+0x28": "$ip_host",
+          "+0x2C": "$port_host"
+        }
+      }
+    },
+    {
+      "label": "address only, flag off, host order",
+      "wait": 8
+    },
+    {
+      "label": "address only, flag off, network order",
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 0.5,
+      "unless_connected": true,
+      "value": {
+        "+0x78": false,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$token"
+          },
+          "+0x28": "$ip_net",
+          "+0x2C": "$port_net"
+        }
+      }
+    },
+    {
+      "label": "address only, flag off, network order",
+      "wait": 8
+    },
+    {
+      "label": "back to idle",
+      "send": [
+        "1CFB43CD",
+        53000
+      ],
+      "after": 0,
+      "unless_connected": true,
+      "value": {
+        "+0x78": {
+          "+0x60": 0
+        }
+      }
+    }
+  ]
+}

@@ -8,7 +8,9 @@ import subprocess
 import time
 from pathlib import Path
 
-k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+# Only Windows has kernel32. Elsewhere (server mode on Linux, the tests) the module still imports,
+# and anything that injects fails with a clear error; the tests patch k32 with a fake.
+k32 = ctypes.WinDLL("kernel32", use_last_error=True) if os.name == "nt" else None
 PROCESS_INJECT = 0x0002 | 0x0008 | 0x0010 | 0x0020 | 0x0400
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 MEM_COMMIT_RESERVE, MEM_RELEASE, PAGE_READWRITE = 0x3000, 0x8000, 0x04
@@ -32,6 +34,8 @@ class ModuleEntry(ctypes.Structure):
 
 
 def _declare(name, restype, *argtypes):
+    if k32 is None:
+        return
     fn = getattr(k32, name)
     fn.restype, fn.argtypes = restype, list(argtypes)
 

@@ -1,4 +1,5 @@
 import ctypes
+import os
 import sys
 import tempfile
 import unittest
@@ -112,6 +113,10 @@ class InjectionTests(unittest.TestCase):
         self.assertEqual(kernel.opens, 0)
 
 
+WINDOWS_ONLY = unittest.skipUnless(os.name == "nt", "uses real Windows error types or processes")
+
+
+@WINDOWS_ONLY
 class ModuleSnapshotRetryTests(unittest.TestCase):
     """A game that is still loading makes the module snapshot fail for a moment (seen in the wild
     as 'WinError 24 ... command length is incorrect'); that must not abort the launch."""
@@ -155,6 +160,7 @@ class ModuleSnapshotRetryTests(unittest.TestCase):
         self.assertGreater(len(calls), 1)
 
 
+@WINDOWS_ONLY
 class ImagePathTests(unittest.TestCase):
     def test_image_path_of_a_real_process_and_of_a_missing_one(self):
         import os

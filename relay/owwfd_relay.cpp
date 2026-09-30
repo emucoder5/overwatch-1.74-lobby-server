@@ -184,9 +184,35 @@ static void gcmStack(char* line,size_t cap){   // who calls it: the packet send 
         if(r<=0)break; m+=r;
     }
 }
+// Header watch: the verify above never runs for our replies, so the game drops them earlier, in its
+// (obfuscated) receive handler. hk_recvfrom raises HDR_WATCH_CODE for each datagram from the game server;
+// the handler puts a read/write data breakpoint (DR3, 8 bytes) on the datagram's bytes 8..15 (the end of
+// the tag and the command) on that thread, and every instruction that then touches them is logged with its
+// RVA, registers and stack: that is the code deciding to drop the reply.
+static const DWORD HDR_WATCH_CODE=0x4F574801;
+static volatile LONG g_hdrN=0;
+static void hdrHit(const CONTEXT* c){
+    LONG n=InterlockedIncrement(&g_hdrN); if(n>300) return;
+    u64 ip=c->Rip; char st[400]; gcmStack(st,sizeof st);
+    L("HDR read #%ld rip=%s%llX rax=%llX rbx=%llX rcx=%llX rdx=%llX rsi=%llX rdi=%llX r8=%llX r9=%llX stack: %s",n,
+      inImage(ip)?"rva ":"",(unsigned long long)(inImage(ip)?ip-g_base:ip),(unsigned long long)c->Rax,
+      (unsigned long long)c->Rbx,(unsigned long long)c->Rcx,(unsigned long long)c->Rdx,(unsigned long long)c->Rsi,
+      (unsigned long long)c->Rdi,(unsigned long long)c->R8,(unsigned long long)c->R9,st);
+}
 static LONG CALLBACK gcmVeh(EXCEPTION_POINTERS* ep){
-    if(ep->ExceptionRecord->ExceptionCode!=EXCEPTION_SINGLE_STEP) return EXCEPTION_CONTINUE_SEARCH;
+    DWORD code=ep->ExceptionRecord->ExceptionCode;
+    if(code==HDR_WATCH_CODE){                      // from hk_recvfrom: watch this datagram's header
+        CONTEXT* c=ep->ContextRecord; u64 at=(u64)ep->ExceptionRecord->ExceptionInformation[0]&~7ULL;
+        c->Dr3=at; c->Dr7=(c->Dr7&~0xF0000000ULL)|0x40|(3ULL<<28)|(2ULL<<30);   // L3, read/write, 8 bytes
+        c->ContextFlags|=CONTEXT_DEBUG_REGISTERS;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if(code!=EXCEPTION_SINGLE_STEP) return EXCEPTION_CONTINUE_SEARCH;
     CONTEXT* c=ep->ContextRecord; u64 ip=c->Rip;
+    if(c->Dr6&8){                                  // DR3: an instruction touched the watched header
+        hdrHit(c); c->Dr6=0; c->ContextFlags|=CONTEXT_DEBUG_REGISTERS;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     u64 seal=g_base+GCM_SEAL_RVA, open=g_base+GCM_OPEN_RVA;
     GcmCall& g=t_gcm;
     if(ip==seal||ip==open){                        // entry: snapshot the args, break again on return
@@ -416,6 +442,10 @@ static int WSAAPI hk_wsasendto(SOCKET s,LPWSABUF bufs,DWORD count,LPDWORD sent,D
 static int WSAAPI hk_recvfrom(SOCKET s,char* buf,int len,int flags,sockaddr* from,int* fromlen){
     int r=o_recvfrom(s,buf,len,flags,from,fromlen);
     netRecv("recvfrom",s,r,from,fromlen?*fromlen:0);
+    if(r>=16&&g_gcmHooked&&from&&from->sa_family==AF_INET){   // a game-server datagram: watch its header
+        u16 p=ntohs(((const sockaddr_in*)from)->sin_port);
+        if(p>=3730&&p<3750){ ULONG_PTR at=(ULONG_PTR)(buf+12); RaiseException(HDR_WATCH_CODE,0,1,&at); }
+    }
     return r;
 }
 static int WSAAPI hk_wsarecvfrom(SOCKET s,LPWSABUF bufs,DWORD count,LPDWORD recvd,LPDWORD flags,sockaddr* from,

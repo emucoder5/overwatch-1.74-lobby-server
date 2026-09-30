@@ -1,5 +1,19 @@
 # Practice Range: where it actually stands, and the next move
 
+## Update (2026-09-30, run `fb2e7035`): no header variant gets through; watch the reads instead
+
+`header_sweep`: all 1128 sealed replies went out (564 x 2) while the game sent 10 packets and read our
+datagrams, and the verify (`0x24D2500`) still never fired. No change to the command's top or low byte,
+the 12-byte body or the footer gets a 34-byte reply past the receive handler. So the drop depends on
+something the sweep kept fixed (length, layout, seq, connection state).
+
+Instead of guessing further, the trace now watches the reply itself. For each datagram from the game
+server, `hk_recvfrom` raises an exception that the trace's handler turns into a read/write data
+breakpoint (DR3, 8 bytes) on the datagram's bytes 8..15. Every instruction that then touches them is
+logged as `HDR read #n rip=rva ...` with registers and stack. That is the code that decides to drop
+the reply, and it can be read from the image instruction by instruction even where it won't decompile.
+No hits at all would mean the drop happens without looking at the header (length, source, or state).
+
 ## Update (2026-09-30, run `9eec49a9`): our replies are dropped BEFORE the tag check
 
 With the breakpoints armed only after the game dialed 3730, the trace survived about 2 s (then the game

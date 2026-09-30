@@ -234,9 +234,28 @@ The send path is fully mapped; you need its mirror. To get a clean decompile:
    The signing functions on the send stack (Track B step 1) define it; read them alongside the
    recv validator.
 
+## Confirmed from the binary: two ciphers, and a fresh session object per connect
+
+Reading the game-server connection constructor (`0x3F89E0`) and its caller (`0x3FF920` @ `0x3FFDBD`):
+
+- The connection holds **two ciphers**: `conn+0x10` from the handoff key block `[0x00:0x28]` and
+  `conn+0x18` from `[0x28:0x50]`. The client seals its outbound connect packets with `conn+0x10`
+  (the `+0xAE` key, per the captures), so **the server->client direction is `conn+0x18` = the `+0xCE`
+  key** with the `+0x18` nonce prefix. This confirms, from the code, the reply cipher we chose.
+- Each connect builds a **fresh connection object** (allocated at `0x3FFD84`) from a handoff-derived
+  struct: the key block, a couple of 32-bit id fields (`conn+0`, `conn+4`), and a flag. That lines up
+  with the community hypothesis that clicking Practice Range "creates another profile" -- it is a new
+  per-attempt session object keyed from the handoff. The "different port" is just the fresh UDP socket
+  the game opens for it (a new ephemeral local port each attempt, seen in every capture).
+
+What this does NOT yet tell us: what the client accepts as a valid *reply*. The parse/accept code runs
+behind the cipher's vtable and the engine's dynamically-resolved socket wrapper -- the same decompile
+wall STATE.md hit -- so it has no static caller to follow. The `OW174_GCM_TRACE` inline hook is the
+fastest safe way to see whether the client calls `open` on our reply and whether it succeeds.
+
 ## One-line summary
 
-Getting the client to *dial* the practice-range game server is done; what's left is speaking
-its realtime UDP protocol back to it, and the fastest first step is to reply with guesses and
-watch whether it reacts (`responder.py`), while pulling the receive-path decompile to learn
-the real reply.
+Dialing is done and the packet seal is solved (AES-256-GCM; reply cipher = the handoff `+0xCE` key,
+prefix `+0x18`, confirmed from the connection constructor). What's left is the client's accept rule for
+a reply, which lives behind the socket/cipher-vtable wall; the `OW174_GCM_TRACE` inline hook is the next
+safe probe, and a capture from a working 1.74 Practice Range would settle it outright.

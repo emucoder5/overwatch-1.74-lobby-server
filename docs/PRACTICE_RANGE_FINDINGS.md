@@ -1,5 +1,16 @@
 # Practice Range: where it actually stands, and the next move
 
+## Update (2026-09-30, run `f7b869da`): the game's code cannot be patched; the trace uses hardware breakpoints
+
+`echo_ce` + trace: the prologues of GcmEncrypt/GcmDecrypt matched at launch, but the inline hook failed
+with `VirtualProtect failed 87` on both, so nothing was logged. The game image cannot be re-protected,
+so no inline patch of game code will ever work. The replies were read again (37 x `RECVDATA ... got=34`),
+and `client_reacted` stayed false. The trace now puts hardware breakpoints (DR0/DR1) on the two leaves
+on every game thread, plus DR2 on each call's return address for the return value, using a vectored
+exception handler. No game byte changes. Same switch (`PRACTICE_REPLIES.bat` option 4), and the same
+`GCM decrypt AUTH-OK` / `AUTH-FAIL` lines in `wfd.log`. If the game's protection checks the debug
+registers, it may exit or crash with the trace on; that result is worth reporting too.
+
 ## Update (2026-09-30): the "token" is an AES-256-GCM tag, and the key comes from the handoff
 
 The responder run (`logs/matches/713ac6d1fd11486e932ac7ed03e46d59`) plus the new `recvfrom` hook settled

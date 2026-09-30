@@ -14,6 +14,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <tlhelp32.h>
 #include <cstdint>
 #include <cstdio>
 #include <cstdarg>
@@ -131,21 +132,17 @@ static void ensureVts(u64 svt){
 // The game's own game-server seal/open wrappers (0x3FB2E0 / 0x3FB740) are control-flow obfuscated and do
 // not decompile, but they bottom out in the CLEAN SymCrypt library leaves: GcmEncrypt 0x24D2500 and
 // GcmDecrypt 0x24D2770. Every game-server packet the game encrypts or decrypts passes through these two,
-// including any reply we send. So this inline-hooks the two leaves in place -- exactly the mechanism the
-// Winsock log below uses -- and logs each call's arguments, the 48 bytes behind each pointer argument, its
-// RETURN VALUE and its caller, then runs the real function. For GcmDecrypt the return value is the prize:
-// SymCrypt returns 0 when the tag verifies (our reply is accepted as authentic) and non-zero on auth
-// failure (our reply is rejected at the crypto layer). SymCrypt args (both are 10-arg, __fastcall):
-//   a1 expanded key, a2 pbNonce, a3 cbNonce, a4 pbAuthData, a5 cbAuthData, a6 pbSrc, a7 pbDst, a8 cbData,
-//   a9 pbTag, a10 cbTag.  For our reply: a4 -> the 22 header bytes, a9 -> the 12-byte tag, a2 -> nonce.
-// NOTHING else is touched -- no object, no vtable, no game code beyond the 15-byte entry patch on each
-// leaf -- so the earlier vtable-identity crash cannot recur. Off unless OW174_GCM_TRACE=1.
+// including any reply we send. The game image cannot be re-protected (VirtualProtect fails with 87 on it,
+// run f7b869da), so an inline patch is impossible; this uses HARDWARE BREAKPOINTS instead: DR0 = GcmEncrypt,
+// DR1 = GcmDecrypt on every game thread, and on each hit DR2 is armed on that call's return address to read
+// the RETURN VALUE. For GcmDecrypt that is the prize: SymCrypt returns 0 when the tag verifies (our reply is
+// accepted as authentic) and non-zero on auth failure (rejected at the crypto layer). SymCrypt args (both
+// 10-arg): a1 expanded key, a2 pbNonce, a3 cbNonce, a4 pbAuthData, a5 cbAuthData, a6 pbSrc, a7 pbDst,
+// a8 cbData, a9 pbTag, a10 cbTag. For our reply: a4 -> the 22 header bytes, a9 -> the 12-byte tag.
+// No byte of the game, no object and no vtable is touched. Off unless OW174_GCM_TRACE=1.
 static const u64 GCM_OPEN_RVA=0x24D2770 /*GcmDecrypt*/, GCM_SEAL_RVA=0x24D2500 /*GcmEncrypt*/;
-typedef u64 (*CipherFn)(void*,u64,u64,u64,u64,u64,u64,u64,u64,u64);
-static CipherFn o_gcmOpen=nullptr, o_gcmSeal=nullptr;
 static volatile LONG g_gcmOpenN=0,g_gcmSealN=0; static bool g_gcmTrace=false; static volatile LONG g_gcmHooked=0;
 static bool g_netlog=false;   // set by netInit() below
-static bool inlineHook(u8* fn,void* hook,void** original,u8* trampoline,const char* name);  // defined below
 
 static int safeCopy(u8* dst,u64 src,int n){
     if(src<0x10000) return 0;
@@ -160,67 +157,98 @@ struct GcmSnap{ bool ok[10]; u8 bytes[10][48]; };
 static void gcmSnap(GcmSnap& s,const u64* a){
     for(int i=0;i<10;i++) s.ok[i]=safeCopy(s.bytes[i],a[i],48)==48;
 }
-static void gcmLog(const char* what,LONG n,void* self,const u64* a,const GcmSnap& before,u64 ret,void* caller){
+static void gcmLog(const char* what,LONG n,const u64* a,const GcmSnap& before,u64 ret,u64 caller,const char* stack){
     if(n>80 && (n%200)!=0) return;
-    u64 c=(u64)caller;
-    L("GCM %s #%ld self=%p ret=%llX caller=%s%llX",what,n,self,(unsigned long long)ret,
-      inImage(c)?"rva ":"",(unsigned long long)(inImage(c)?c-g_base:c));
+    L("GCM %s #%ld key=%llX ret=%llX caller=%s%llX",what,n,(unsigned long long)a[0],(unsigned long long)ret,
+      inImage(caller)?"rva ":"",(unsigned long long)(inImage(caller)?caller-g_base:caller));
     L("  args a2..a10: %llX %llX %llX %llX %llX %llX %llX %llX %llX",
       (unsigned long long)a[1],(unsigned long long)a[2],(unsigned long long)a[3],(unsigned long long)a[4],
       (unsigned long long)a[5],(unsigned long long)a[6],(unsigned long long)a[7],(unsigned long long)a[8],
       (unsigned long long)a[9]);
     char h[104];
     for(int i=1;i<10;i++) if(before.ok[i]){ hexLine(h,sizeof h,before.bytes[i],48); L("  a%d-> %s",i+1,h); }
-    if(n<=3){                                   // who calls it: the packet send / receive functions
-        void* frames[16]; USHORT got=RtlCaptureStackBackTrace(1,16,frames,nullptr);
-        char line[400]; size_t m=0; line[0]=0;
-        for(USHORT i=0;i<got&&m+24<sizeof line;i++){
-            u64 f=(u64)frames[i];
-            int r=inImage(f)?snprintf(line+m,sizeof line-m,"%llX ",(unsigned long long)(f-g_base))
-                            :snprintf(line+m,sizeof line-m,"(%llX) ",(unsigned long long)f);
-            if(r<=0)break; m+=r;
-        }
-        L("  stack (rva): %s",line);
+    if(stack[0]) L("  stack (rva): %s",stack);
+}
+// One call in flight per thread (the leaves do not nest). Filled at entry, logged at return.
+struct GcmCall{ bool armed, open; u64 a[10], ret; GcmSnap s; char stack[400]; };
+static thread_local GcmCall t_gcm;
+static void gcmStack(char* line,size_t cap){   // who calls it: the packet send / receive functions
+    void* frames[16]; USHORT got=RtlCaptureStackBackTrace(2,16,frames,nullptr);
+    size_t m=0; line[0]=0;
+    for(USHORT i=0;i<got&&m+24<cap;i++){
+        u64 f=(u64)frames[i];
+        int r=inImage(f)?snprintf(line+m,cap-m,"%llX ",(unsigned long long)(f-g_base))
+                        :snprintf(line+m,cap-m,"(%llX) ",(unsigned long long)f);
+        if(r<=0)break; m+=r;
     }
 }
-static u64 hk_gcmOpen(void* self,u64 a2,u64 a3,u64 a4,u64 a5,u64 a6,u64 a7,u64 a8,u64 a9,u64 a10){
-    u64 a[10]={(u64)self,a2,a3,a4,a5,a6,a7,a8,a9,a10}; GcmSnap s; gcmSnap(s,a);
-    u64 r=o_gcmOpen(self,a2,a3,a4,a5,a6,a7,a8,a9,a10);
-    // GcmDecrypt: r==0 means the tag verified (reply accepted as authentic); non-zero means rejected.
-    gcmLog(r==0?"decrypt AUTH-OK":"decrypt AUTH-FAIL",InterlockedIncrement(&g_gcmOpenN),self,a,s,r,_ReturnAddress());
-    return r;
+static LONG CALLBACK gcmVeh(EXCEPTION_POINTERS* ep){
+    if(ep->ExceptionRecord->ExceptionCode!=EXCEPTION_SINGLE_STEP) return EXCEPTION_CONTINUE_SEARCH;
+    CONTEXT* c=ep->ContextRecord; u64 ip=c->Rip;
+    u64 seal=g_base+GCM_SEAL_RVA, open=g_base+GCM_OPEN_RVA;
+    GcmCall& g=t_gcm;
+    if(ip==seal||ip==open){                        // entry: snapshot the args, break again on return
+        if(!g.armed){
+            u64 sp=c->Rsp;
+            g.a[0]=c->Rcx; g.a[1]=c->Rdx; g.a[2]=c->R8; g.a[3]=c->R9;
+            for(int i=4;i<10;i++) g.a[i]=rd64((void*)(sp+8+i*8),0);   // [rsp] = return, then 4 shadow slots
+            gcmSnap(g.s,g.a);
+            g.open=(ip==open); g.ret=rd64((void*)sp,0);
+            LONG n=g.open?g_gcmOpenN:g_gcmSealN;
+            if(n<3) gcmStack(g.stack,sizeof g.stack); else g.stack[0]=0;
+            if(g.ret){ g.armed=true; c->Dr2=g.ret; c->Dr7=(c->Dr7&~0x0F000000ULL)|0x10; }   // L2, execute
+        }
+    }else if(g.armed&&ip==g.ret){                  // return: rax is SymCrypt's result
+        g.armed=false; c->Dr2=0; c->Dr7&=~0x10ULL;
+        if(g.open) gcmLog(c->Rax==0?"decrypt AUTH-OK":"decrypt AUTH-FAIL",InterlockedIncrement(&g_gcmOpenN),g.a,g.s,c->Rax,g.ret,g.stack);
+        else       gcmLog("encrypt",InterlockedIncrement(&g_gcmSealN),g.a,g.s,c->Rax,g.ret,g.stack);
+    }else return EXCEPTION_CONTINUE_SEARCH;
+    c->Dr6=0; c->EFlags|=0x10000;                  // RF: step over the execute breakpoint
+    c->ContextFlags|=CONTEXT_DEBUG_REGISTERS;
+    return EXCEPTION_CONTINUE_EXECUTION;
 }
-static u64 hk_gcmSeal(void* self,u64 a2,u64 a3,u64 a4,u64 a5,u64 a6,u64 a7,u64 a8,u64 a9,u64 a10){
-    u64 a[10]={(u64)self,a2,a3,a4,a5,a6,a7,a8,a9,a10}; GcmSnap s; gcmSnap(s,a);
-    u64 r=o_gcmSeal(self,a2,a3,a4,a5,a6,a7,a8,a9,a10);
-    gcmLog("encrypt",InterlockedIncrement(&g_gcmSealN),self,a,s,r,_ReturnAddress());
-    return r;
+// Put DR0/DR1 on every thread of the game, including ones created later (called every second).
+static int gcmArmThreads(){
+    u64 seal=g_base+GCM_SEAL_RVA, open=g_base+GCM_OPEN_RVA; int armed=0;
+    HANDLE snap=CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD,0); if(snap==INVALID_HANDLE_VALUE) return 0;
+    THREADENTRY32 te; te.dwSize=sizeof te; DWORD pid=GetCurrentProcessId(), me=GetCurrentThreadId();
+    for(BOOL ok=Thread32First(snap,&te);ok;ok=Thread32Next(snap,&te)){
+        if(te.th32OwnerProcessID!=pid||te.th32ThreadID==me) continue;
+        HANDLE t=OpenThread(THREAD_GET_CONTEXT|THREAD_SET_CONTEXT|THREAD_SUSPEND_RESUME,FALSE,te.th32ThreadID);
+        if(!t) continue;
+        if(SuspendThread(t)!=(DWORD)-1){
+            alignas(16) CONTEXT c; memset(&c,0,sizeof c); c.ContextFlags=CONTEXT_DEBUG_REGISTERS;
+            if(GetThreadContext(t,&c)&&(c.Dr0!=seal||c.Dr1!=open||(c.Dr7&5)!=5)){
+                c.Dr0=seal; c.Dr1=open; c.Dr7=(c.Dr7&~0x00FF000FULL)|5;   // L0 L1, execute, len 1; DR2 left alone
+                if(SetThreadContext(t,&c)) armed++;
+            }
+            ResumeThread(t);
+        }
+        CloseHandle(t);
+    }
+    CloseHandle(snap);
+    return armed;
 }
 // The SymCrypt GcmEncrypt/GcmDecrypt prologue: REX push rbp, pushes, then `sub rsp, 0x110`. Both leaves
-// share it. Checked before hooking, so a different build -- or code not decrypted yet -- is left alone.
+// share it. Checked before arming, so a different build -- or code not decrypted yet -- is left alone.
 static const u8 GCM_PROLOGUE[11]={0x40,0x55,0x56,0x57,0x41,0x56,0x41,0x57,0x48,0x81,0xEC};
-static u8* g_gcmPool=nullptr;
-// Hook seal and open the moment each one shows the 1.74 prologue -- and KEEP WATCHING until then, forever.
-// The game does not decrypt these functions until Practice Range actually uses them (~30 s after launch,
-// when you click it), and open may only decrypt when the first packet is opened, so this must not give up
-// early and must hook the two independently (g_gcmHooked is a bitmask: 1 = seal, 2 = open).
-static void gcmHookOne(u64 rva,int bit,void* hook,void** original,int poolslot,const char* name){
-    if(g_gcmHooked&bit) return;
-    u8* fn=(u8*)(g_base+rva); u8 h[11];
-    if(safeCopy(h,(u64)fn,11)!=11||memcmp(h,GCM_PROLOGUE,11)) return;   // not decrypted / not this build yet
-    if(!g_gcmPool) g_gcmPool=(u8*)VirtualAlloc(nullptr,256,MEM_COMMIT|MEM_RESERVE,PAGE_EXECUTE_READWRITE);
-    if(!g_gcmPool){ g_gcmTrace=false; return; }
-    g_gcmHooked|=bit;   // set before patching: never re-enter this hook site
-    if(inlineHook(fn,hook,original,g_gcmPool+poolslot,name))
-        L("GCM trace: %s hooked (in-place, no vtable touched)",name);
-}
 static void gcmTryHook(){
-    if(!g_gcmTrace||g_gcmHooked==3) return;
-    gcmHookOne(GCM_SEAL_RVA,1,(void*)&hk_gcmSeal,(void**)&o_gcmSeal,0,"GcmEncrypt");
-    gcmHookOne(GCM_OPEN_RVA,2,(void*)&hk_gcmOpen,(void**)&o_gcmOpen,64,"GcmDecrypt");
-    static int tries=0;
-    if((++tries==1||tries%2500==0)&&g_gcmHooked!=3)
-        L("GCM trace: waiting for GcmEncrypt/GcmDecrypt to decrypt in memory (hooked bits=%ld)",g_gcmHooked);
+    if(!g_gcmTrace) return;
+    static int tries=0; tries++;
+    if(!g_gcmHooked){
+        u8 a[11],b[11];
+        if(safeCopy(a,g_base+GCM_SEAL_RVA,11)!=11||memcmp(a,GCM_PROLOGUE,11)||
+           safeCopy(b,g_base+GCM_OPEN_RVA,11)!=11||memcmp(b,GCM_PROLOGUE,11)){
+            if(tries==1||tries%2500==0) L("GCM trace: waiting for GcmEncrypt/GcmDecrypt to decrypt in memory");
+            return;
+        }
+        if(!AddVectoredExceptionHandler(1,gcmVeh)){ L("GCM trace off: no exception handler"); g_gcmTrace=false; return; }
+        g_gcmHooked=3;
+        L("GCM trace: hardware breakpoints on GcmEncrypt/GcmDecrypt (no game byte changed)");
+    }
+    if(tries%125!=1) return;                       // ~1 s: catch threads the game started since
+    int n=gcmArmThreads();
+    if(n) L("GCM trace: breakpoints set on %d more thread(s)",n);
 }
 
 static void scan(){
@@ -491,7 +519,7 @@ static DWORD WINAPI worker(LPVOID){
     L("==== owwfd_relay (plaintext pipe -> 127.0.0.1:%u) base=%016llX bsVt=%016llX ====",RELAY_PORT,(unsigned long long)g_base,(unsigned long long)g_bsVA);
     netInit();
     { wchar_t f[8]={0}; DWORD n=GetEnvironmentVariableW(L"OW174_GCM_TRACE",f,8); g_gcmTrace=(n>0&&n<8&&f[0]==L'1'); }
-    if(g_gcmTrace) L("GCM trace requested (OW174_GCM_TRACE=1): will hook GcmEncrypt/GcmDecrypt once decrypted");
+    if(g_gcmTrace) L("GCM trace requested (OW174_GCM_TRACE=1): will set hardware breakpoints on GcmEncrypt/GcmDecrypt");
     for(int loop=0;;loop++){
         scan();
         if((loop%80)==0)L("[poll] loop=%d swaps=%ld send=%ld recv=%ld stateCalls=%ld relays=%d err=%ld net=%ld gcm=%ld/%ld/%ld",loop,g_swaps,g_send,g_recv,g_stateCalls,g_nRelays,g_relayErr,g_netPatched,g_gcmHooked,g_gcmSealN,g_gcmOpenN);

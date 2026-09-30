@@ -1,0 +1,7 @@
+[
+  {"template": "echo"},
+  {"template": "echo_seq0"},
+  {"template": "accept_cmd"},
+  {"template": "challenge"},
+  {"hex": "000000000000000000000000 100000f0 00000000 000000000000000000000000 01ad"}
+]

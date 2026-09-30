@@ -40,13 +40,20 @@ def _stop_process(process: subprocess.Popen) -> None:
         process.wait(timeout=2)
 
 
+# Which game-server module each session runs. On this branch the default is the ACTIVE
+# responder (ow174.matches.responder), which replies to the client's connect packets and
+# records whether the client reacts. Set OW174_GAME_INSTANCE=ow174.matches.instance to get
+# the original silent recorder back (the no-reply baseline to compare against).
+GAME_INSTANCE_MODULE = os.environ.get("OW174_GAME_INSTANCE", "ow174.matches.responder")
+
+
 def _instance_command(directory: Path, port: int, player: str, mode: int, activity: str) -> list[str]:
     return [
         sys.executable,
         "-B",
         "-u",
         "-m",
-        "ow174.matches.instance",
+        GAME_INSTANCE_MODULE,
         "--directory",
         str(directory.resolve()),
         "--host",

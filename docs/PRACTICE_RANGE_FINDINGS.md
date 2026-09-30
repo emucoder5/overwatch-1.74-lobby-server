@@ -1,5 +1,34 @@
 # Practice Range: where it actually stands, and the next move
 
+## Update (2026-09-30, header watch run): packet+12 is a connection id, and ours never matches
+
+The header watch (`HDR read` lines, `echo_ce` + trace) caught the receive path reading our reply's
+bytes at RVA `0x4028E4` (called from `0x4018C3` <- `0x4023E0` <- `0x3FF3B2`). That code is not
+obfuscated:
+
+```
+4028CF  lea r15, [rdx+0x9C]          ; the datagram (inline buffer; > 0x4F0 bytes -> [rdx+0x590])
+4028E4  mov eax, [r15+0xC]           ; the u32 at packet+12
+4028F3  shr eax, 4                   ; -> connection id
+402900  ...                          ; lower_bound in a tree at [rcx+0x30]: left +8, right +0x10, u32 key +0x20
+402924  cmp rbx, rdx / jne 40297F    ; not found -> drop the packet (0x402929), no crypto at all
+```
+
+- **The field at +12 is not a command.** It is `(connection id << 4) | type`. The game's own
+  `0xF0000010` is connection id `0x0F000001`, type 0. An echo carries the game's id, which is not
+  in its own tree, so every earlier reply was dropped here. That also explains `header_sweep`: it
+  never used an id the game holds.
+- **After a match** (`0x40297F`) the code unmasks the connection pointer stored in the node
+  (`[node+0x28]`) and goes into obfuscated code again, so later checks (type nibble, source address,
+  seq) are not known yet.
+- **Still unknown:** which id the game expects on replies, and which type nibble a server reply uses.
+  The id is not in the client's connect frame (its body is all zero), so it most likely comes from the
+  handoff (20600) or is a fixed value. A capture or notes from a real 1.74 game-server join would settle
+  both at once.
+
+The hardware-breakpoint trace still closes the game about 2 s after it is armed (its protection checks
+the debug registers while it runs), so each traced run only covers the first ~8 packets.
+
 ## Update (2026-09-30, run `fb2e7035`): no header variant gets through; watch the reads instead
 
 `header_sweep`: all 1128 sealed replies went out (564 x 2) while the game sent 10 packets and read our

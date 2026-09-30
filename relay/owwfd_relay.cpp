@@ -173,9 +173,14 @@ typedef int (WSAAPI *wsaconnect_t)(SOCKET,const sockaddr*,int,LPWSABUF,LPWSABUF,
 typedef int (WSAAPI *sendto_t)(SOCKET,const char*,int,int,const sockaddr*,int);
 typedef int (WSAAPI *wsasendto_t)(SOCKET,LPWSABUF,DWORD,LPDWORD,DWORD,const sockaddr*,int,LPWSAOVERLAPPED,
                                   LPWSAOVERLAPPED_COMPLETION_ROUTINE);
+typedef int (WSAAPI *recvfrom_t)(SOCKET,char*,int,int,sockaddr*,int*);
+typedef int (WSAAPI *wsarecvfrom_t)(SOCKET,LPWSABUF,DWORD,LPDWORD,LPDWORD,sockaddr*,LPINT,LPWSAOVERLAPPED,
+                                    LPWSAOVERLAPPED_COMPLETION_ROUTINE);
 static socket_t o_socket=nullptr; static wsasocketw_t o_wsasocketw=nullptr; static bind_t o_bind=nullptr;
 static connect_t o_connect=nullptr; static wsaconnect_t o_wsaconnect=nullptr;
 static sendto_t o_sendto=nullptr; static wsasendto_t o_wsasendto=nullptr;
+static recvfrom_t o_recvfrom=nullptr; static wsarecvfrom_t o_wsarecvfrom=nullptr;
+static volatile LONG g_udpData=0;
 static bool g_netlog=false; static volatile LONG g_netPatched=0;
 
 struct NetSeen{ char key[96]; LONG count; };
@@ -229,6 +234,28 @@ static void netSocket(const char* fn,int af,int type,int proto,SOCKET s){
     netLog(key,detail);
 }
 
+// The local port a socket is bound to, so a game-server receive can be tied to the socket that dialed 3730.
+static u16 localPort(SOCKET s){
+    sockaddr_in a; int l=sizeof a; memset(&a,0,sizeof a);
+    if(getsockname(s,(sockaddr*)&a,&l)==0 && a.sin_family==AF_INET) return ntohs(a.sin_port);
+    return 0;
+}
+// Log the receive side. Two distinct signals answer "is the game listening for a game-server reply?":
+//   1. POLL  - the game CALLS recvfrom on a UDP socket (deduped: first + every 1000th). Proves it listens.
+//   2. DATA  - the call RETURNS bytes (got>0). Proves a datagram (e.g. our reply) reached its recv path.
+// got: >0 bytes received, 0 nothing this call (WOULDBLOCK / pending), -1 error/unknown.
+static void netRecv(const char* fn,SOCKET s,int got,const sockaddr* from,int fromlen){
+    const char* kind=socketKind(s); u16 lp=localPort(s);
+    char key[96]; snprintf(key,sizeof key,"%s %s local=:%u socket=%llu",fn,kind,lp,(unsigned long long)s);
+    netLog(key,"poll");                                    // signal 1: the game is reading this socket
+    if(got>0){                                             // signal 2: real data landed (the important one)
+        LONG d=InterlockedIncrement(&g_udpData);
+        char addr[64]; formatAddr(from,fromlen,addr,sizeof addr);
+        if(d<=64||(d%1000)==0) L("RECVDATA %s %s local=:%u from %s got=%d socket=%llu",
+                                 fn,kind,lp,addr,got,(unsigned long long)s);
+    }
+}
+
 static SOCKET WSAAPI hk_socket(int af,int type,int proto){
     SOCKET s=o_socket(af,type,proto); netSocket("socket",af,type,proto,s); return s;
 }
@@ -254,6 +281,19 @@ static int WSAAPI hk_wsasendto(SOCKET s,LPWSABUF bufs,DWORD count,LPDWORD sent,D
             netNote("WSASendTo",s,to,len,total); }
     return o_wsasendto(s,bufs,count,sent,flags,to,len,ov,done);
 }
+static int WSAAPI hk_recvfrom(SOCKET s,char* buf,int len,int flags,sockaddr* from,int* fromlen){
+    int r=o_recvfrom(s,buf,len,flags,from,fromlen);
+    netRecv("recvfrom",s,r,from,fromlen?*fromlen:0);
+    return r;
+}
+static int WSAAPI hk_wsarecvfrom(SOCKET s,LPWSABUF bufs,DWORD count,LPDWORD recvd,LPDWORD flags,sockaddr* from,
+                                 LPINT fromlen,LPWSAOVERLAPPED ov,LPWSAOVERLAPPED_COMPLETION_ROUTINE cr){
+    int r=o_wsarecvfrom(s,bufs,count,recvd,flags,from,fromlen,ov,cr);
+    // Immediate completion gives bytes in *recvd; overlapped returns pending and completes later, so log the
+    // poll either way and the byte count when we have it now.
+    netRecv("WSARecvFrom",s,(r==0&&recvd)?(int)*recvd:0,from,fromlen?*fromlen:0);
+    return r;
+}
 
 struct NetHook{ const char* name; void** original; void* hook; };
 static NetHook g_hooks[]={
@@ -264,6 +304,8 @@ static NetHook g_hooks[]={
     {"WSAConnect",(void**)&o_wsaconnect,(void*)&hk_wsaconnect},
     {"sendto",(void**)&o_sendto,(void*)&hk_sendto},
     {"WSASendTo",(void**)&o_wsasendto,(void*)&hk_wsasendto},
+    {"recvfrom",(void**)&o_recvfrom,(void*)&hk_recvfrom},
+    {"WSARecvFrom",(void**)&o_wsarecvfrom,(void*)&hk_wsarecvfrom},
 };
 static const int N_HOOKS=(int)(sizeof g_hooks/sizeof g_hooks[0]);
 

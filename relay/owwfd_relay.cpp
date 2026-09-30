@@ -127,16 +127,20 @@ static void ensureVts(u64 svt){
     L("built vts: sockHeap=%p (from %llX rva %llX) bsHeap=%p",(void*)g_sockVtHeap,(unsigned long long)svt,(unsigned long long)(svt-g_base),(void*)g_bsVtHeap);
 }
 
-// ---- game-server cipher trace (opt-in: OW174_GCM_TRACE=1) ----
-// The game seals and opens its game-server UDP packets with SymCrypt AES-GCM through two wrapper functions,
-// seal 0x3FB2E0 and open 0x3FB740 (see ow174/matches/gamecrypto.py). This inline-hooks those two functions
-// in place -- exactly the mechanism the Winsock log below uses -- so each call logs its arguments, the 48
-// bytes behind each pointer argument, its return value and its caller, then runs the game's own code.
-// NOTHING ELSE is touched: no object and no vtable pointer is modified, so the game's own checks still see
-// the real cipher objects. (An earlier version swapped each cipher object's vtable pointer; the game
-// treats that pointer as the object's type identity, so swapping it crashed the game. Inline-hooking the
-// two functions avoids that entirely.) Off unless OW174_GCM_TRACE=1: instrumenting the game is invasive.
-static const u64 GCM_OPEN_RVA=0x3FB740, GCM_SEAL_RVA=0x3FB2E0;
+// ---- game-server crypto trace (opt-in: OW174_GCM_TRACE=1) ----
+// The game's own game-server seal/open wrappers (0x3FB2E0 / 0x3FB740) are control-flow obfuscated and do
+// not decompile, but they bottom out in the CLEAN SymCrypt library leaves: GcmEncrypt 0x24D2500 and
+// GcmDecrypt 0x24D2770. Every game-server packet the game encrypts or decrypts passes through these two,
+// including any reply we send. So this inline-hooks the two leaves in place -- exactly the mechanism the
+// Winsock log below uses -- and logs each call's arguments, the 48 bytes behind each pointer argument, its
+// RETURN VALUE and its caller, then runs the real function. For GcmDecrypt the return value is the prize:
+// SymCrypt returns 0 when the tag verifies (our reply is accepted as authentic) and non-zero on auth
+// failure (our reply is rejected at the crypto layer). SymCrypt args (both are 10-arg, __fastcall):
+//   a1 expanded key, a2 pbNonce, a3 cbNonce, a4 pbAuthData, a5 cbAuthData, a6 pbSrc, a7 pbDst, a8 cbData,
+//   a9 pbTag, a10 cbTag.  For our reply: a4 -> the 22 header bytes, a9 -> the 12-byte tag, a2 -> nonce.
+// NOTHING else is touched -- no object, no vtable, no game code beyond the 15-byte entry patch on each
+// leaf -- so the earlier vtable-identity crash cannot recur. Off unless OW174_GCM_TRACE=1.
+static const u64 GCM_OPEN_RVA=0x24D2770 /*GcmDecrypt*/, GCM_SEAL_RVA=0x24D2500 /*GcmEncrypt*/;
 typedef u64 (*CipherFn)(void*,u64,u64,u64,u64,u64,u64,u64,u64,u64);
 static CipherFn o_gcmOpen=nullptr, o_gcmSeal=nullptr;
 static volatile LONG g_gcmOpenN=0,g_gcmSealN=0; static bool g_gcmTrace=false; static volatile LONG g_gcmHooked=0;
@@ -182,18 +186,19 @@ static void gcmLog(const char* what,LONG n,void* self,const u64* a,const GcmSnap
 static u64 hk_gcmOpen(void* self,u64 a2,u64 a3,u64 a4,u64 a5,u64 a6,u64 a7,u64 a8,u64 a9,u64 a10){
     u64 a[10]={(u64)self,a2,a3,a4,a5,a6,a7,a8,a9,a10}; GcmSnap s; gcmSnap(s,a);
     u64 r=o_gcmOpen(self,a2,a3,a4,a5,a6,a7,a8,a9,a10);
-    gcmLog("open",InterlockedIncrement(&g_gcmOpenN),self,a,s,r,_ReturnAddress());
+    // GcmDecrypt: r==0 means the tag verified (reply accepted as authentic); non-zero means rejected.
+    gcmLog(r==0?"decrypt AUTH-OK":"decrypt AUTH-FAIL",InterlockedIncrement(&g_gcmOpenN),self,a,s,r,_ReturnAddress());
     return r;
 }
 static u64 hk_gcmSeal(void* self,u64 a2,u64 a3,u64 a4,u64 a5,u64 a6,u64 a7,u64 a8,u64 a9,u64 a10){
     u64 a[10]={(u64)self,a2,a3,a4,a5,a6,a7,a8,a9,a10}; GcmSnap s; gcmSnap(s,a);
     u64 r=o_gcmSeal(self,a2,a3,a4,a5,a6,a7,a8,a9,a10);
-    gcmLog("seal",InterlockedIncrement(&g_gcmSealN),self,a,s,r,_ReturnAddress());
+    gcmLog("encrypt",InterlockedIncrement(&g_gcmSealN),self,a,s,r,_ReturnAddress());
     return r;
 }
-// The 1.74 seal/open prologue: 7 one-byte pushes, then `mov eax, 0x22D0`. Checked before hooking, so a
-// different build -- or code the game has not decrypted yet -- is left alone instead of being patched.
-static const u8 GCM_PROLOGUE[11]={0x53,0x55,0x56,0x57,0x41,0x54,0x41,0x56,0x41,0x57,0xB8};
+// The SymCrypt GcmEncrypt/GcmDecrypt prologue: REX push rbp, pushes, then `sub rsp, 0x110`. Both leaves
+// share it. Checked before hooking, so a different build -- or code not decrypted yet -- is left alone.
+static const u8 GCM_PROLOGUE[11]={0x40,0x55,0x56,0x57,0x41,0x56,0x41,0x57,0x48,0x81,0xEC};
 static u8* g_gcmPool=nullptr;
 // Hook seal and open the moment each one shows the 1.74 prologue -- and KEEP WATCHING until then, forever.
 // The game does not decrypt these functions until Practice Range actually uses them (~30 s after launch,
@@ -211,11 +216,11 @@ static void gcmHookOne(u64 rva,int bit,void* hook,void** original,int poolslot,c
 }
 static void gcmTryHook(){
     if(!g_gcmTrace||g_gcmHooked==3) return;
-    gcmHookOne(GCM_SEAL_RVA,1,(void*)&hk_gcmSeal,(void**)&o_gcmSeal,0,"GCM seal");
-    gcmHookOne(GCM_OPEN_RVA,2,(void*)&hk_gcmOpen,(void**)&o_gcmOpen,64,"GCM open");
+    gcmHookOne(GCM_SEAL_RVA,1,(void*)&hk_gcmSeal,(void**)&o_gcmSeal,0,"GcmEncrypt");
+    gcmHookOne(GCM_OPEN_RVA,2,(void*)&hk_gcmOpen,(void**)&o_gcmOpen,64,"GcmDecrypt");
     static int tries=0;
     if((++tries==1||tries%2500==0)&&g_gcmHooked!=3)
-        L("GCM trace: waiting for seal/open to decrypt (they decrypt when Practice Range runs; hooked=%ld)",g_gcmHooked);
+        L("GCM trace: waiting for GcmEncrypt/GcmDecrypt to decrypt in memory (hooked bits=%ld)",g_gcmHooked);
 }
 
 static void scan(){
@@ -486,7 +491,7 @@ static DWORD WINAPI worker(LPVOID){
     L("==== owwfd_relay (plaintext pipe -> 127.0.0.1:%u) base=%016llX bsVt=%016llX ====",RELAY_PORT,(unsigned long long)g_base,(unsigned long long)g_bsVA);
     netInit();
     { wchar_t f[8]={0}; DWORD n=GetEnvironmentVariableW(L"OW174_GCM_TRACE",f,8); g_gcmTrace=(n>0&&n<8&&f[0]==L'1'); }
-    if(g_gcmTrace) L("GCM trace requested (OW174_GCM_TRACE=1): will hook seal/open once decrypted");
+    if(g_gcmTrace) L("GCM trace requested (OW174_GCM_TRACE=1): will hook GcmEncrypt/GcmDecrypt once decrypted");
     for(int loop=0;;loop++){
         scan();
         if((loop%80)==0)L("[poll] loop=%d swaps=%ld send=%ld recv=%ld stateCalls=%ld relays=%d err=%ld net=%ld gcm=%ld/%ld/%ld",loop,g_swaps,g_send,g_recv,g_stateCalls,g_nRelays,g_relayErr,g_netPatched,g_gcmHooked,g_gcmSealN,g_gcmOpenN);

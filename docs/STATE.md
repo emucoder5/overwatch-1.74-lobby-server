@@ -17,6 +17,8 @@
 
 Next test, `practice_plain_host`: in the 1.74 client, the first field of 20600 marks the payload as encrypted (every earlier plan sent it true with a plain payload), and the 64-byte field at +0x2E is the server address as text, which earlier plans left empty. The plan sends the flag false and writes the address there.
 
+Game-server connection: with the `practice_plain_host` handoff the game dials the local game server over UDP and reads what comes back. Its packets are sealed with AES-256-GCM, keyed by the handoff (see `docs/PRACTICE_RANGE_FINDINGS.md` and `ow174/matches/gamecrypto.py`). `practice_keys` is the next test: known keys in the handoff and correctly sealed replies.
+
 ## Does not work yet
 
 - Joining a match. Sending a server address (message 20600) gave no network traffic from the game. That test only watched the local game server, so a wrongly encoded address would have looked the same; the experiment plans retest it with both byte orders and the relay's network log.

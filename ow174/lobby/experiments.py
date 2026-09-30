@@ -27,6 +27,13 @@ String values that start with "$" are replaced:
     $port_net   the port with its two bytes swapped
     $host_text  the instance address as text ("127.0.0.1"), as a list of bytes for a u8[] field
     $token      a random 64-bit number, the same for every step of one run
+    $probe_key_ae, $probe_key_ce
+                fixed, known 32-byte keys (lists of bytes) for the handoff's two u8[32] fields
+    $probe_id_lo, $probe_id_hi, $probe_u64_10, $probe_u64_18, $probe_u64_20
+                fixed, known 64-bit values for the handoff's other fields
+
+The $probe_ values come from ow174/matches/gamecrypto.py, so the game-server responder knows them and
+can tell from the game's packets which key and nonce prefix it uses (experiments/practice_keys.json).
 
 The plan is read again for every request, so it can be edited while the server runs. The results go
 to the log: each step sent, then whether the game sent UDP packets to the instance.
@@ -43,6 +50,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ow174.matches import gamecrypto
 from ow174.paths import ROOT
 
 if TYPE_CHECKING:
@@ -148,6 +156,9 @@ def placeholders(host: str, port: int, token: int) -> dict[str, int | list[int]]
         "$port_net": int.from_bytes(port.to_bytes(2, "big"), "little"),
         "$token": token,
         "$host_text": list(host.encode("ascii")),
+        "$probe_key_ae": list(gamecrypto.PROBE_KEY_AE),
+        "$probe_key_ce": list(gamecrypto.PROBE_KEY_CE),
+        **{f"$probe_{name}": value for name, value in gamecrypto.PROBE_U64.items()},
     }
 
 

@@ -1,5 +1,82 @@
 # Practice Range: where it actually stands, and the next move
 
+## Update (2026-09-30): the "token" is an AES-256-GCM tag, and the key comes from the handoff
+
+The responder run (`logs/matches/713ac6d1fd11486e932ac7ed03e46d59`) plus the new `recvfrom` hook settled
+the question Track A asked: `relay/log/wfd.log` has `RECVDATA recvfrom UDP local=:63884 from
+127.0.0.1:3730 got=34` for the replies, so **the game reads every reply on the game socket**. It ignored
+them because they failed authentication:
+
+- The 12 "token" bytes are the first 12 bytes of an **AES-256-GCM tag** over an empty plaintext, with
+  AAD = the other 22 bytes and nonce = 8-byte prefix || seq (u32 LE). In that run the key and the
+  prefix were **all zero**, and the handoff's two `u8[32]` fields (`+0x80+0xAE`, `+0x80+0xCE`) were
+  zero too. All 39 captured packets verify (`py -m ow174.matches.gamecrypto logs\matches\<id>`).
+- Of the old reply templates only `echo` carried a valid tag (the others could never pass), and an echo
+  of the client's own connect command changed nothing.
+
+Where this is in the client image (`logs/overwatch_image.zip`, base `0x7FF632310000`, RVAs):
+
+| RVA | what |
+|---|---|
+| `0x24D2500` / `0x24D2770` | SymCrypt `GcmEncrypt` / `GcmDecrypt` (`0x24D2BB0` GcmInit checks cbNonce == 12) |
+| `0x03FB2E0` / `0x03FB740` | the game's seal / open (vtable `0x25F5BE0` / `0x25F5BD8`); nonce = {prefix qword, seq dword} |
+| `0x03FAD50` | AES-GCM cipher constructor; copies a 40-byte `{key[32], prefix[8]}` block and masks it |
+| `0x03FA810` | unmasks the block per packet (obfuscated, VM-style; not needed) |
+| `0x03FBC60` | cipher factory: type 2 none, 0 raw, >=3 masked AES-GCM |
+| `0x03F89E0` | game-connection constructor: **two** ciphers from one 80-byte block, `[0x00:0x28]` -> conn+0x10, `[0x28:0x50]` -> conn+0x18 (one per direction) |
+
+The code around these is obfuscated (junk bytes and opaque predicates between real instructions), so
+the direct callers of seal/open were not traced; the direction mapping is left to the next run.
+
+### Result of the `practice_keys` run (capture `6b6a7071901c429b97067ffe68a541d1`, retail)
+
+- **The game seals with the handoff's `+0xAE` key and the `+0x18` u64 as nonce prefix**
+  (`client_cipher: key_ae/prefix_u64_18_le`, all 31 packets). The keys are used as sent, so the key
+  block is `{+0xAE, +0x18}` for what the game sends, and most likely `{+0xCE, +0x18}` for what it
+  receives.
+- **The game gave up about 4 s early.** Baseline (`713ac6d1`): first UDP 08:58:43.5, lobby 21802
+  `{true}` at :55, then it drops the lobby connection (about 11.5 s). Here: first UDP 09:23:43.9,
+  21802 at :51 while it was still sending (about 7.5 s), 31 packets instead of 39.
+- **The game paused once, for 0.74 s between its packets 26 and 27**, with no catch-up burst after, so
+  the pause was on the game's side. (The 0.78 s gap after packet 0 was the responder loading its AES
+  code; it now does that before listening.) The only replies in the two bursts before the pause were
+  sealed with key `+0xCE` and prefix `+0x18`: commands `0xF00000A9`..`0xF00000C8`, zero body and ack
+  body. So that cipher is very likely the right server-to-game one, and one of those commands looks
+  like something the game acts on (plausibly a disconnect or refuse).
+- `client_reacted` stayed false because the packet shape never changed, and the early end was not
+  flagged because the server stops the responder when the game drops the lobby. The responder now
+  records `client_pauses` and `client_ended_early` with the replies sent just before.
+
+### Next run: `PRACTICE_BISECT.bat`
+
+Same `practice_keys` handoff, but the responder follows `experiments/replies/bisect_a9_c8.json`: ONE
+reply per game packet, key `+0xCE`, prefix `+0x18`, commands `0xF00000B9`..`C8` first, then
+`A9`..`B8`. The packet after which the game pauses or gives up names the command
+(`state.json`: `client_pauses`, `client_ended_early`). If nothing happens, the early end came from the
+volume (several hundred valid packets, or server sequence numbers in the hundreds) rather than one
+command, and the next plan tests that instead.
+
+### Earlier: `PRACTICE_TEST.bat` or `PRACTICE_TEST_NORELAY.bat` (plan `practice_keys`)
+
+The plan fills the two key fields and the u64s of 20600 with known probe values
+(`gamecrypto.PROBE_*`). The responder (`ow174/matches/responder.py`):
+
+1. identifies which key/prefix the client seals with -> `state.json` `client_cipher`
+   (`unknown` means the handoff keys are not used as-is; that is an answer too);
+2. answers with correctly sealed candidates for the other direction, most likely first (the other
+   key, the same or another prefix, a direction bit), across priority command tags and then the whole
+   `0xF00000xx` low byte, each with a zero body and with the client's seq as an ack;
+3. records a reaction (new packet shape, new source port, or going quiet early) with the candidates
+   sent just before -> `state.json` `reaction` / `client_went_quiet`, and `replies.jsonl`.
+
+Send back `logs/matches/<id>/`, `logs/ow174.log` and `relay/log/wfd.log`. Once a candidate triggers a
+reaction, pin it with `OW174_REPLY_PLAN=<file.json>` (a `sealed` entry, see the responder docstring) and
+look at what the client sends next: that is the next message to answer.
+
+---
+
+## Earlier notes (before the update above)
+
 Read of the whole tree (`ow174/`, `jam/`, `matches/`, `experiments/`, `tools/`, `relay/`),
 the captures in `logs/matches/`, `logs/ow174.log`, `relay/log/wfd.log`, and the Ghidra dump.
 

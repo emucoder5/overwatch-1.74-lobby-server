@@ -1,0 +1,293 @@
+{
+  "description": "One sealed reply per game packet, key +0xCE with the game's own prefix (+0x18): 0xF00000B9..C8 first (the burst right before the game paused and gave up early in capture 6b6a7071), then 0xF00000A9..B8. The packet the game pauses or gives up after names the command. Use with PRACTICE_BISECT.bat.",
+  "per_packet": [
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000B9"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000BA"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000BB"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000BC"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000BD"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000BE"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000BF"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000C0"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000C1"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000C2"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000C3"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000C4"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000C5"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000C6"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000C7"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000C8"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000A9"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000AA"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000AB"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000AC"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000AD"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000AE"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000AF"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000B0"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000B1"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000B2"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000B3"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000B4"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000B5"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000B6"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000B7"
+        }
+      }
+    ],
+    [
+      {
+        "sealed": {
+          "key": "ce",
+          "prefix": "client",
+          "cmd": "0xF00000B8"
+        }
+      }
+    ]
+  ]
+}

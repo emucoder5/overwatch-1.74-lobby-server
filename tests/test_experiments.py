@@ -22,6 +22,7 @@ from ow174.lobby.experiments import (
 )
 from ow174.lobby.handlers import build_router
 from ow174.lobby.session import Session
+from ow174.matches import gamecrypto
 from ow174.matches.runtime import MatchManager
 
 CUSTOM = 0xA6E53896
@@ -35,6 +36,7 @@ SHIPPED_PLANS = (
     "practice_found_sweep",
     "practice_enter",
     "practice_plain_host",
+    "practice_keys",
 )
 
 
@@ -73,6 +75,16 @@ class PlanTests(unittest.TestCase):
         self.assertFalse(decoded["+0x78"])
         self.assertEqual(bytes(decoded["+0x80"]["+0x2E"]).rstrip(b"\0"), b"127.0.0.1")
         self.assertEqual(decoded["+0x80"]["+0x2C"], 3730)
+
+    def test_keys_handoff_carries_the_probe_keys(self):
+        plan = load_plan(resolve_plan_path("practice_keys"), self.schemas)
+        handoff = next(step for step in plan.steps if step.msg_id == 20600)
+        value = build_value(self.schemas, handoff, placeholders("127.0.0.1", 3730, 7))
+        decoded = self.schemas.decode(HANDOFF, 20600, self.schemas.encode(HANDOFF, 20600, value))
+        self.assertEqual(bytes(decoded["+0x80"]["+0xAE"]), gamecrypto.PROBE_KEY_AE)
+        self.assertEqual(bytes(decoded["+0x80"]["+0xCE"]), gamecrypto.PROBE_KEY_CE)
+        self.assertEqual(decoded["+0x80"]["+0x18"], gamecrypto.PROBE_U64["u64_18"])
+        self.assertEqual(bytes(decoded["+0x80"]["+0x2E"]).rstrip(b"\0"), b"127.0.0.1")
 
     def test_a_misspelled_field_is_refused(self):
         path = write_plan(self.tmp.name, [{"send": ["074DAD18", 20600], "value": {"+0x80": {"+0x2D": 1}}}])

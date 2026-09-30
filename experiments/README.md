@@ -21,9 +21,17 @@ plan.
 | `practice_enter` | the `practice` messages that reached "Entering Practice Range", with no reset to idle, and a 90 s wait |
 | `practice_found_sweep` | searching, then 8 candidate "game ready" messages, each followed by the handoff |
 | `practice_plain_host` | searching, create-game reply, then the handoff with its first field false (not encrypted) and the address as text in the 64-byte field; repeated at 20 s, 60 s wait |
+| `practice_keys` | `practice_plain_host`, plus known session keys in the handoff's two 32-byte fields and known values in its u64 fields, so the responder can tell which key seals each direction and answer with correctly sealed packets. **Run this one next.** |
 | `practice_state_sweep` | the searching-state message (53000) with states 1 to 9, to see which ones the game accepts (its 52903 answer) |
 
-`PRACTICE_TEST.bat` runs whichever plan is named on its `py` line.
+`PRACTICE_BISECT.bat` (retail) runs `practice_keys` with the scripted replies in
+`experiments/replies/bisect_a9_c8.json` (set through `OW174_REPLY_PLAN`). `PRACTICE_TEST.bat` (retail, relay) and `PRACTICE_TEST_NORELAY.bat` (tournament) run whichever plan is
+named on their `py` line; both run `practice_keys` now.
+
+The game-server side is `ow174/matches/responder.py`. The game's UDP packets are sealed with AES-256-GCM
+(`ow174/matches/gamecrypto.py`); the responder reads the key from the game's first packet and answers
+with correctly sealed reply candidates. `py -m ow174.matches.gamecrypto logs\matches\<id>` checks a
+capture offline.
 
 A plan is re-read on every request, so you can edit its JSON while the server runs. To try your own
 plan, copy one and start with `--experiment path\to\my_plan.json`. The field list and the
@@ -33,7 +41,8 @@ plan, copy one and start with `--experiment path\to\my_plan.json`. The field lis
 
 - `logs/ow174.log`: the `[exp]` lines list each step sent, and end with a `RESULT` line that says
   whether the game sent any UDP packets to the local game server.
-- `logs/matches/<id>/packets.jsonl`, if the RESULT says packets arrived.
+- `logs/matches/<id>/state.json`, `packets.jsonl` and `replies.jsonl`, if the RESULT says packets
+  arrived. `state.json` has `client_cipher`, `client_reacted`, `reaction` and `client_went_quiet`.
 - `relay/log/wfd.log`: in retail mode, `NET` lines list every address the game connects or sends to.
   A handoff that reaches the wrong address shows up here even when RESULT says no packets.
 - `client_msgs.log`: everything the game sent back, such as its 52903 acknowledgement.

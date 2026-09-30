@@ -1,0 +1,90 @@
+{
+  "description": "practice_plain_host with KNOWN session keys: the handoff's two u8[32] fields (+0xAE, +0xCE) and its u64s (+0x10, +0x18, +0x20) are filled with the probe values from ow174/matches/gamecrypto.py, and the game id is a fixed probe value. The responder uses them to tell which key and nonce prefix seal each direction, then answers with correctly sealed candidates.",
+  "on": [
+    "practice"
+  ],
+  "watch": 60,
+  "steps": [
+    {
+      "send": [
+        "1CFB43CD",
+        53000
+      ],
+      "after": 0,
+      "value": {
+        "+0x78": {
+          "+0x60": 4
+        },
+        "+0xE8": "$probe_id_lo"
+      }
+    },
+    {
+      "send": [
+        "21286B49",
+        23320
+      ],
+      "after": 0.5,
+      "value": {
+        "+0x78": 0,
+        "+0x80": {
+          "+0x60": 4
+        },
+        "+0xE8": {
+          "+0x0": {
+            "+0x0": {
+              "+0x0": "$probe_id_lo"
+            }
+          }
+        }
+      }
+    },
+    {
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 0.5,
+      "unless_connected": true,
+      "value": {
+        "+0x78": false,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$probe_id_lo"
+          },
+          "+0x10": "$probe_u64_10",
+          "+0x18": "$probe_u64_18",
+          "+0x20": "$probe_u64_20",
+          "+0x28": "$ip_host",
+          "+0x2C": "$port_host",
+          "+0x2E": "$host_text",
+          "+0xAE": "$probe_key_ae",
+          "+0xCE": "$probe_key_ce"
+        }
+      }
+    },
+    {
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 20,
+      "unless_connected": true,
+      "value": {
+        "+0x78": false,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$probe_id_lo"
+          },
+          "+0x10": "$probe_u64_10",
+          "+0x18": "$probe_u64_18",
+          "+0x20": "$probe_u64_20",
+          "+0x28": "$ip_host",
+          "+0x2C": "$port_host",
+          "+0x2E": "$host_text",
+          "+0xAE": "$probe_key_ae",
+          "+0xCE": "$probe_key_ce"
+        }
+      }
+    }
+  ]
+}

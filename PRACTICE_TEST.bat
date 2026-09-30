@@ -8,5 +8,5 @@ where py >nul 2>nul || (
   pause
   exit /b 1
 )
-py -3 -B -m ow174 --mode retail --experiment practice_plain_host %*
+py -3 -B -m ow174 --mode retail --experiment practice_keys %*
 pause

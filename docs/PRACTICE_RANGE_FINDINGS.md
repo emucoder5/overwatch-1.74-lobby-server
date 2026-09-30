@@ -47,7 +47,30 @@ the direct callers of seal/open were not traced; the direction mapping is left t
   flagged because the server stops the responder when the game drops the lobby. The responder now
   records `client_pauses` and `client_ended_early` with the replies sent just before.
 
-### Next run: `PRACTICE_BISECT.bat`
+### Result of the bisect run (capture `1a4967fc51b24b81a08328c450fe7543`) and a correction
+
+Each of `0xF00000A9`..`C8` went out alone (key `+0xCE`, prefix `+0x18`), one per game packet. No pause,
+no new packet shape, 38 packets. And the timing matches the previous run anyway, so **the "early give
+up" was not a reaction to a reply**. Measured from the 20600 handoff to the game's 21802:
+
+| capture | handoff keys | replies | handoff -> 21802 |
+|---|---|---|---|
+| `713ac6d1` | all zero | old responder (its `echo` was validly sealed under the zero keys) | ~12 s |
+| `6b6a7071` | probe keys | ~1000 sealed candidates | ~8 s |
+| `1a4967fc` | probe keys | 32 single sealed commands | ~8 s |
+
+The 0.74 s pause in `6b6a7071` was most likely an unrelated hitch. What is left: the only run that
+lasted longer is the one where every reply was a valid packet carrying the game's own connect command.
+
+### Next runs: `PRACTICE_REPLIES.bat`, test 1 (`silent`) then test 2 (`echo_ce`)
+
+Same `practice_keys` handoff both times. `silent` answers nothing (the keyed timing baseline).
+`echo_ce` answers every packet with the game's own connect frame, sealed with key `+0xCE` and the
+`+0x18` prefix. If `echo_ce` holds on clearly longer than `silent`, the game accepts packets sealed
+that way, which pins the server-to-game cipher and gives a dependable "accepted" signal for the next
+steps. The server log now has milliseconds and `state.json` has `first_packet_at`.
+
+### Earlier: `PRACTICE_BISECT.bat` (now test 3 of `PRACTICE_REPLIES.bat`)
 
 Same `practice_keys` handoff, but the responder follows `experiments/replies/bisect_a9_c8.json`: ONE
 reply per game packet, key `+0xCE`, prefix `+0x18`, commands `0xF00000B9`..`C8` first, then

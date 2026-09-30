@@ -1,0 +1,13 @@
+{
+  "description": "Answer every game packet with its own connect command, sealed for the server-to-game direction (key +0xCE, the game's +0x18 prefix) with the game's sequence number. The first capture (zero keys, where the echo was also validly sealed) waited ~4 s longer than the keyed runs; if this one does too, the game accepts +0xCE/+0x18 packets.",
+  "then": [
+    {
+      "sealed": {
+        "key": "ce",
+        "prefix": "client",
+        "cmd": "0xF0000010",
+        "seq": "client"
+      }
+    }
+  ]
+}

@@ -24,8 +24,8 @@ plan.
 | `practice_keys` | `practice_plain_host`, plus known session keys in the handoff's two 32-byte fields and known values in its u64 fields, so the responder can tell which key seals each direction and answer with correctly sealed packets. **Run this one next.** |
 | `practice_state_sweep` | the searching-state message (53000) with states 1 to 9, to see which ones the game accepts (its 52903 answer) |
 
-`PRACTICE_BISECT.bat` (retail) runs `practice_keys` with the scripted replies in
-`experiments/replies/bisect_a9_c8.json` (set through `OW174_REPLY_PLAN`). `PRACTICE_TEST.bat` (retail, relay) and `PRACTICE_TEST_NORELAY.bat` (tournament) run whichever plan is
+`PRACTICE_REPLIES.bat` (retail) runs `practice_keys` and asks which reply plan in `experiments/replies/`
+the game server follows: `silent`, `echo_ce` or `bisect_a9_c8` (passed through `OW174_REPLY_PLAN`). `PRACTICE_TEST.bat` (retail, relay) and `PRACTICE_TEST_NORELAY.bat` (tournament) run whichever plan is
 named on their `py` line; both run `practice_keys` now.
 
 The game-server side is `ow174/matches/responder.py`. The game's UDP packets are sealed with AES-256-GCM

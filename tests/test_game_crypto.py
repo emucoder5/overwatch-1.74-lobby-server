@@ -134,6 +134,16 @@ class PlanTests(unittest.TestCase):
             all(len(steps) == 1 and steps[0]["sealed"]["key"] == "ce" for steps in plan["per_packet"])
         )
 
+    def test_the_shipped_silent_and_echo_plans(self):
+        silent = json.loads((ROOT / "experiments/replies/silent.json").read_text(encoding="utf-8"))
+        self.assertEqual([plan_steps(silent, n) for n in range(40)], [[]] * 40)
+        echo = json.loads((ROOT / "experiments/replies/echo_ce.json").read_text(encoding="utf-8"))
+        client = GameCipher(PROBE_KEY_AE, struct.pack("<Q", PROBE_U64["u64_18"]))
+        for seq in (0, 7):
+            (packet,) = plan_replies({"seq": seq}, b"", plan_steps(echo, seq), client, [0])
+            self.assertTrue(GameCipher(PROBE_KEY_CE, client.prefix).verify(packet))
+            self.assertEqual(packet[12:], header(CONNECT_CMD, seq))
+
     def test_early_end_is_recorded_with_the_last_replies(self):
         state = {"replies_sent": 5, "packets_received": 31}
         _note_early_end(state, [[{"cmd": "a"}], [{"cmd": "b"}]])

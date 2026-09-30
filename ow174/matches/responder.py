@@ -27,7 +27,7 @@ carried a tag that cannot verify. This version:
      another source port) or when it goes quiet early, and records which candidates went out just
      before, in state.json (reaction) and replies.jsonl.
 
-A reply plan (--reply-plan, or the OW174_REPLY_PLAN environment variable, which PRACTICE_BISECT.bat
+A reply plan (--reply-plan, or the OW174_REPLY_PLAN environment variable, which PRACTICE_REPLIES.bat
 sets) replaces the sweep with exact replies. It is a JSON list sent for every packet, or
 {"per_packet": [[...], [...]], "then": [...]} for a different list per packet. Each entry is one of
     {"hex": "..."}                                   a literal packet, unsealed
@@ -261,6 +261,7 @@ def run(
         "reaction": None,
         "shapes_seen": [],
         "started_at": time.time(),
+        "first_packet_at": None,
         "last_packet_at": None,
     }
 
@@ -327,6 +328,8 @@ def _serve(sock, stop, state, state_path, plog, rlog, reply_plan, reply_after, b
                 }
             )
         previous_at = now
+        if state["first_packet_at"] is None:
+            state["first_packet_at"] = now
         state["packets_received"] += 1
         state["bytes_received"] += len(data)
         state["last_packet_at"] = now

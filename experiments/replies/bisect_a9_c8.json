@@ -1,5 +1,5 @@
 {
-  "description": "One sealed reply per game packet, key +0xCE with the game's own prefix (+0x18): 0xF00000B9..C8 first (the burst right before the game paused and gave up early in capture 6b6a7071), then 0xF00000A9..B8. The packet the game pauses or gives up after names the command. Use with PRACTICE_BISECT.bat.",
+  "description": "One sealed reply per game packet, key +0xCE with the game's own prefix (+0x18): 0xF00000B9..C8 first (the burst right before the game paused and gave up early in capture 6b6a7071), then 0xF00000A9..B8. The packet the game pauses or gives up after names the command. Use with PRACTICE_REPLIES.bat.",
   "per_packet": [
     [
       {

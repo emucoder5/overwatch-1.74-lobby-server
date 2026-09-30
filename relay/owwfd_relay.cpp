@@ -195,23 +195,27 @@ static u64 hk_gcmSeal(void* self,u64 a2,u64 a3,u64 a4,u64 a5,u64 a6,u64 a7,u64 a
 // different build -- or code the game has not decrypted yet -- is left alone instead of being patched.
 static const u8 GCM_PROLOGUE[11]={0x53,0x55,0x56,0x57,0x41,0x54,0x41,0x56,0x41,0x57,0xB8};
 static u8* g_gcmPool=nullptr;
-static void gcmTryHook(){
-    if(!g_gcmTrace||g_gcmHooked) return;
-    u8* seal=(u8*)(g_base+GCM_SEAL_RVA); u8* open=(u8*)(g_base+GCM_OPEN_RVA);
-    u8 hs[11],ho[11];
-    if(safeCopy(hs,(u64)seal,11)!=11||safeCopy(ho,(u64)open,11)!=11) return;
-    if(memcmp(hs,GCM_PROLOGUE,11)||memcmp(ho,GCM_PROLOGUE,11)){
-        static int misses=0;
-        if(++misses==1||misses==2000) L("GCM trace: seal/open not the 1.74 prologue yet (waiting for decrypt)");
-        if(misses>=2000){ g_gcmTrace=false; L("GCM trace off: seal/open never matched the 1.74 prologue"); }
-        return;
-    }
+// Hook seal and open the moment each one shows the 1.74 prologue -- and KEEP WATCHING until then, forever.
+// The game does not decrypt these functions until Practice Range actually uses them (~30 s after launch,
+// when you click it), and open may only decrypt when the first packet is opened, so this must not give up
+// early and must hook the two independently (g_gcmHooked is a bitmask: 1 = seal, 2 = open).
+static void gcmHookOne(u64 rva,int bit,void* hook,void** original,int poolslot,const char* name){
+    if(g_gcmHooked&bit) return;
+    u8* fn=(u8*)(g_base+rva); u8 h[11];
+    if(safeCopy(h,(u64)fn,11)!=11||memcmp(h,GCM_PROLOGUE,11)) return;   // not decrypted / not this build yet
     if(!g_gcmPool) g_gcmPool=(u8*)VirtualAlloc(nullptr,256,MEM_COMMIT|MEM_RESERVE,PAGE_EXECUTE_READWRITE);
     if(!g_gcmPool){ g_gcmTrace=false; return; }
-    g_gcmHooked=1;   // set first: the inline-hooked function must not be re-hooked mid-install
-    bool a=inlineHook(seal,(void*)&hk_gcmSeal,(void**)&o_gcmSeal,g_gcmPool,"GCM seal");
-    bool b=inlineHook(open,(void*)&hk_gcmOpen,(void**)&o_gcmOpen,g_gcmPool+64,"GCM open");
-    L("GCM trace %s: seal and open log every call (in-place hook, no vtable touched)",(a&&b)?"on":"PARTIAL");
+    g_gcmHooked|=bit;   // set before patching: never re-enter this hook site
+    if(inlineHook(fn,hook,original,g_gcmPool+poolslot,name))
+        L("GCM trace: %s hooked (in-place, no vtable touched)",name);
+}
+static void gcmTryHook(){
+    if(!g_gcmTrace||g_gcmHooked==3) return;
+    gcmHookOne(GCM_SEAL_RVA,1,(void*)&hk_gcmSeal,(void**)&o_gcmSeal,0,"GCM seal");
+    gcmHookOne(GCM_OPEN_RVA,2,(void*)&hk_gcmOpen,(void**)&o_gcmOpen,64,"GCM open");
+    static int tries=0;
+    if((++tries==1||tries%2500==0)&&g_gcmHooked!=3)
+        L("GCM trace: waiting for seal/open to decrypt (they decrypt when Practice Range runs; hooked=%ld)",g_gcmHooked);
 }
 
 static void scan(){

@@ -259,3 +259,27 @@ Dialing is done and the packet seal is solved (AES-256-GCM; reply cipher = the h
 prefix `+0x18`, confirmed from the connection constructor). What's left is the client's accept rule for
 a reply, which lives behind the socket/cipher-vtable wall; the `OW174_GCM_TRACE` inline hook is the next
 safe probe, and a capture from a working 1.74 Practice Range would settle it outright.
+
+## Ghidra pass (2026-09-30): the connect/receive netcode is obfuscated
+
+Ran Ghidra 11.3.2 headless on the decrypted image (`logs/overwatch_image.zip`, base 0x7FF632310000).
+
+Clean, readable decompiles for normal functions. The game-server connection constructor `0x3F89E0`
+confirms the two-cipher design: it stores two AES-GCM ciphers built from one key block — the SEND cipher
+at object `+0x10` (from block `[0x00:0x28]`) and the RECEIVE cipher at `+0x18` (from block `[0x28:0x50]`),
+matching gamecrypto.py. The handoff consumer `0xE3AD2E` copies a 0xE0-byte record and calls the
+connection builder `0x3FC550`->`0x3FF920`->`0x3F89E0`.
+
+But the connect/receive netcode itself is anti-decompilation protected:
+- `0x3FF920` (connection builder): hundreds of "Unable to resolve constructor" p-code errors, decompiler
+  timeout. Control-flow obfuscated.
+- `0x7CF230`: overlapping instructions, "bad instruction data", hundreds of unreachable blocks.
+- `0x1832F00`: decompiler timeout.
+- `0x59ED70`: "Flow exceeded maximum allowable instructions" (the same wall the original notes hit).
+
+So a decompiler cannot read the packet accept/reject logic; the protection defeats static analysis.
+The remaining dynamic option that avoids the obfuscation is to hook the CLEAN SymCrypt leaf functions
+GcmEncrypt `0x24D2500` / GcmDecrypt `0x24D2770` (the crypto library, not obfuscated) rather than the
+game's wrappers: every game-server packet decrypt must pass through GcmDecrypt, so a hook there shows
+whether the game ever decrypts our reply, with the key/nonce/plaintext, independent of the obfuscated
+wrapper. That is the counterpart to the (mis-aimed) 0x3FB740 wrapper trace.

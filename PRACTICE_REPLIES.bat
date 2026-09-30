@@ -14,17 +14,19 @@ echo   1  silent               no replies (timing baseline)
 echo   2  echo_ce              the game's own packet back, sealed with the +0xCE key
 echo   3  bisect_a9_c8         one command per packet
 echo   4  echo_ce + trace      like 2, plus a log of the game's own seal/open calls
+echo   5  header sweep + trace which reply headers get past the game's checks
 echo.
 set "pick="
-set /p "pick=Which test? [1-4]: "
+set /p "pick=Which test? [1-5]: "
 set "plan="
 set "OW174_GCM_TRACE="
 if "%pick%"=="1" set "plan=silent"
 if "%pick%"=="2" set "plan=echo_ce"
 if "%pick%"=="3" set "plan=bisect_a9_c8"
 if "%pick%"=="4" ( set "plan=echo_ce" & set "OW174_GCM_TRACE=1" )
+if "%pick%"=="5" ( set "plan=header_sweep" & set "OW174_GCM_TRACE=1" )
 if not defined plan (
-  echo Pick 1, 2, 3 or 4.
+  echo Pick 1, 2, 3, 4 or 5.
   pause
   exit /b 1
 )

@@ -1,5 +1,27 @@
 # Practice Range: where it actually stands, and the next move
 
+## Update (2026-09-30, run `9eec49a9`): our replies are dropped BEFORE the tag check
+
+With the breakpoints armed only after the game dialed 3730, the trace survived about 2 s (then the game
+closed again, so its protection also checks while it runs) and caught 9 calls. They settle two things:
+
+- **The two leaves were labelled the wrong way round.** `0x24D2770` computes the tag and writes it into
+  the packet (seal). The logged call for seq 3 (key pointer, AAD = the header with seq 3, nonce =
+  `4444444444444444` || 3) gives exactly the game's own packet-3 tag with the `+0xAE` key. `0x24D2500`
+  is the same code ending in a compare (`call 0x24D3E90`, `sete al`): the verify. Both take
+  `(ctx, aad, cbAad, data, cbData, nonce, cbNonce, tag, cbTag)` and return a bool in `al`.
+- **The verify never ran.** DR0 was on `0x24D2500` on the same 153 threads while 9 `echo_ce` replies
+  arrived (RECVDATA), and it never fired. The open wrapper `0x3FB2E0` goes straight to the verify with
+  no checks of its own. So the game's receive handler (obfuscated) throws our replies away on something
+  in the plain header or the datagram before any crypto. The key question is no longer "is the cipher
+  right" but "what header does the receive handler accept".
+
+Next: `PRACTICE_REPLIES.bat` option 5 (`experiments/replies/header_sweep.json`) sends 564 correctly
+sealed headers, each varying one field: the command's top byte, its low byte, the 12-byte body (the
+handoff's probe ids and u64s) and the footer. They go out in bursts on game packets 1-8, inside the ~2 s
+the trace survives. Any header that gets past the check shows up as a `GCM verify PASS/FAIL` line with
+its `aad=`.
+
 ## Update (2026-09-30, run `f7b869da`): the game's code cannot be patched; the trace uses hardware breakpoints
 
 `echo_ce` + trace: the prologues of GcmEncrypt/GcmDecrypt matched at launch, but the inline hook failed

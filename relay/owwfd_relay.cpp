@@ -129,18 +129,17 @@ static void ensureVts(u64 svt){
 }
 
 // ---- game-server crypto trace (opt-in: OW174_GCM_TRACE=1) ----
-// The game's own game-server seal/open wrappers (0x3FB2E0 / 0x3FB740) are control-flow obfuscated and do
-// not decompile, but they bottom out in the CLEAN SymCrypt library leaves: GcmEncrypt 0x24D2500 and
-// GcmDecrypt 0x24D2770. Every game-server packet the game encrypts or decrypts passes through these two,
-// including any reply we send. The game image cannot be re-protected (VirtualProtect fails with 87 on it,
-// run f7b869da), so an inline patch is impossible; this uses HARDWARE BREAKPOINTS instead: DR0 = GcmEncrypt,
-// DR1 = GcmDecrypt on every game thread, and on each hit DR2 is armed on that call's return address to read
-// the RETURN VALUE. For GcmDecrypt that is the prize: SymCrypt returns 0 when the tag verifies (our reply is
-// accepted as authentic) and non-zero on auth failure (rejected at the crypto layer). SymCrypt args (both
-// 10-arg): a1 expanded key, a2 pbNonce, a3 cbNonce, a4 pbAuthData, a5 cbAuthData, a6 pbSrc, a7 pbDst,
-// a8 cbData, a9 pbTag, a10 cbTag. For our reply: a4 -> the 22 header bytes, a9 -> the 12-byte tag.
-// No byte of the game, no object and no vtable is touched. Off unless OW174_GCM_TRACE=1.
-static const u64 GCM_OPEN_RVA=0x24D2770 /*GcmDecrypt*/, GCM_SEAL_RVA=0x24D2500 /*GcmEncrypt*/;
+// The game's game-server wrappers (0x3FB2E0 open, 0x3FB740 seal) bottom out in two clean GCM leaves:
+// 0x24D2500 VERIFY (recomputes the tag, compares it, returns al=1 on a match) and 0x24D2770 SEAL (computes
+// the tag and writes it into the packet). Run 9eec49a9 proved the direction: the 0x24D2770 calls produced
+// exactly the game's own outgoing tags (key +0xAE), and 0x24D2500 never fired while 9 of our replies came in,
+// so the replies are dropped BEFORE the tag check. Both leaves take (a1 ctx, a2 pbAuthData, a3 cbAuthData,
+// a4 pbData, a5 cbData, a6 pbNonce, a7 cbNonce, a8 pbTag, a9 cbTag) and return a bool in al.
+// The game image cannot be re-protected (VirtualProtect fails with 87, run f7b869da), so this uses HARDWARE
+// BREAKPOINTS: DR0 = verify, DR1 = seal on every game thread, and DR2 on each call's return address for the
+// result. No byte of the game, no object and no vtable is touched. Off unless OW174_GCM_TRACE=1.
+// A "GCM verify" line means a reply got past the game's header checks; its aad= is the header that did.
+static const u64 GCM_OPEN_RVA=0x24D2500 /*verify*/, GCM_SEAL_RVA=0x24D2770 /*seal*/;
 static volatile LONG g_gcmOpenN=0,g_gcmSealN=0; static bool g_gcmTrace=false; static volatile LONG g_gcmHooked=0;
 // Armed only once the game dials the game server: breakpoints set at launch killed the game within ~2 s
 // (its protection checks at startup), so nothing is set before Practice Range is clicked.
@@ -160,16 +159,16 @@ struct GcmSnap{ bool ok[10]; u8 bytes[10][48]; };
 static void gcmSnap(GcmSnap& s,const u64* a){
     for(int i=0;i<10;i++) s.ok[i]=safeCopy(s.bytes[i],a[i],48)==48;
 }
-static void gcmLog(const char* what,LONG n,const u64* a,const GcmSnap& before,u64 ret,u64 caller,const char* stack){
-    if(n>80 && (n%200)!=0) return;
-    L("GCM %s #%ld key=%llX ret=%llX caller=%s%llX",what,n,(unsigned long long)a[0],(unsigned long long)ret,
+static void gcmLog(bool open,LONG n,const u64* a,const GcmSnap& g,u64 ret,u64 caller,const char* stack){
+    if(open ? n>4000 : n>3) return;             // every verify (they are the signal); the first seals only
+    char aad[64]="?",nonce[32]="?",tag[32]="?";
+    int la=(int)(a[2]<=22?a[2]:22);
+    if(g.ok[1]) hexLine(aad,sizeof aad,g.bytes[1],la);
+    if(g.ok[5]) hexLine(nonce,sizeof nonce,g.bytes[5],12);
+    if(g.ok[7]) hexLine(tag,sizeof tag,g.bytes[7],12);
+    L("GCM %s #%ld aad=%s len=%llu nonce=%s tag=%s caller=%s%llX",
+      open?((ret&0xFF)?"verify PASS":"verify FAIL"):"seal",n,aad,(unsigned long long)a[4],nonce,tag,
       inImage(caller)?"rva ":"",(unsigned long long)(inImage(caller)?caller-g_base:caller));
-    L("  args a2..a10: %llX %llX %llX %llX %llX %llX %llX %llX %llX",
-      (unsigned long long)a[1],(unsigned long long)a[2],(unsigned long long)a[3],(unsigned long long)a[4],
-      (unsigned long long)a[5],(unsigned long long)a[6],(unsigned long long)a[7],(unsigned long long)a[8],
-      (unsigned long long)a[9]);
-    char h[104];
-    for(int i=1;i<10;i++) if(before.ok[i]){ hexLine(h,sizeof h,before.bytes[i],48); L("  a%d-> %s",i+1,h); }
     if(stack[0]) L("  stack (rva): %s",stack);
 }
 // One call in flight per thread (the leaves do not nest). Filled at entry, logged at return.
@@ -203,8 +202,8 @@ static LONG CALLBACK gcmVeh(EXCEPTION_POINTERS* ep){
         }
     }else if(g.armed&&ip==g.ret){                  // return: rax is SymCrypt's result
         g.armed=false; c->Dr2=0; c->Dr7&=~0x10ULL;
-        if(g.open) gcmLog(c->Rax==0?"decrypt AUTH-OK":"decrypt AUTH-FAIL",InterlockedIncrement(&g_gcmOpenN),g.a,g.s,c->Rax,g.ret,g.stack);
-        else       gcmLog("encrypt",InterlockedIncrement(&g_gcmSealN),g.a,g.s,c->Rax,g.ret,g.stack);
+        if(g.open) gcmLog(true,InterlockedIncrement(&g_gcmOpenN),g.a,g.s,c->Rax,g.ret,g.stack);
+        else       gcmLog(false,InterlockedIncrement(&g_gcmSealN),g.a,g.s,c->Rax,g.ret,g.stack);
     }else return EXCEPTION_CONTINUE_SEARCH;
     c->Dr6=0; c->EFlags|=0x10000;                  // RF: step over the execute breakpoint
     c->ContextFlags|=CONTEXT_DEBUG_REGISTERS;
@@ -242,12 +241,12 @@ static void gcmTryHook(){
         u8 a[11],b[11];
         if(safeCopy(a,g_base+GCM_SEAL_RVA,11)!=11||memcmp(a,GCM_PROLOGUE,11)||
            safeCopy(b,g_base+GCM_OPEN_RVA,11)!=11||memcmp(b,GCM_PROLOGUE,11)){
-            if(tries==1||tries%2500==0) L("GCM trace: waiting for GcmEncrypt/GcmDecrypt to decrypt in memory");
+            if(tries==1||tries%2500==0) L("GCM trace: waiting for GCM verify/seal to decrypt in memory");
             return;
         }
         if(!AddVectoredExceptionHandler(1,gcmVeh)){ L("GCM trace off: no exception handler"); g_gcmTrace=false; return; }
         g_gcmHooked=3;
-        L("GCM trace: hardware breakpoints on GcmEncrypt/GcmDecrypt (no game byte changed)");
+        L("GCM trace: hardware breakpoints on GCM verify/seal (no game byte changed)");
     }
     if(tries%125!=1) return;                       // ~1 s: catch threads the game started since
     int n=gcmArmThreads();
@@ -525,7 +524,7 @@ static DWORD WINAPI worker(LPVOID){
     L("==== owwfd_relay (plaintext pipe -> 127.0.0.1:%u) base=%016llX bsVt=%016llX ====",RELAY_PORT,(unsigned long long)g_base,(unsigned long long)g_bsVA);
     netInit();
     { wchar_t f[8]={0}; DWORD n=GetEnvironmentVariableW(L"OW174_GCM_TRACE",f,8); g_gcmTrace=(n>0&&n<8&&f[0]==L'1'); }
-    if(g_gcmTrace) L("GCM trace requested (OW174_GCM_TRACE=1): will set hardware breakpoints on GcmEncrypt/GcmDecrypt when the game dials the game server");
+    if(g_gcmTrace) L("GCM trace requested (OW174_GCM_TRACE=1): will set hardware breakpoints on GCM verify/seal when the game dials the game server");
     for(int loop=0;;loop++){
         scan();
         if((loop%80)==0)L("[poll] loop=%d swaps=%ld send=%ld recv=%ld stateCalls=%ld relays=%d err=%ld net=%ld gcm=%ld/%ld/%ld",loop,g_swaps,g_send,g_recv,g_stateCalls,g_nRelays,g_relayErr,g_netPatched,g_gcmHooked,g_gcmSealN,g_gcmOpenN);

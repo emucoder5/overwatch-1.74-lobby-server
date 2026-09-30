@@ -9,7 +9,8 @@
 //   first a WebSocket upgrade "GET / HTTP/1.1 ... Upgrade: websocket", then BGS-over-WS frames.
 // We swap [bs+0x48].send/recv to a byte-pipe: send -> our TCP socket to 127.0.0.1:21119 (RELAY_PORT, the
 // Python BGS server in ow174/bnet, which does the WS upgrade + BGS), recv <- that socket. TLS never runs.
-// Optional: with OW174_NETLOG=1 it also logs every address the game dials (see "network log" below).
+// Optional: with OW174_NETLOG=1 it also logs every address the game dials (see "network log" below), and
+// every seal/open of a game-server packet (see "game-server cipher trace").
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -18,6 +19,7 @@
 #include <cstdarg>
 #include <cstring>
 #include <string>
+#include <intrin.h>
 #pragma comment(lib,"ws2_32.lib")
 typedef uint64_t u64; typedef uint32_t u32; typedef uint16_t u16; typedef uint8_t u8; typedef int64_t i64;
 
@@ -125,13 +127,108 @@ static void ensureVts(u64 svt){
     L("built vts: sockHeap=%p (from %llX rva %llX) bsHeap=%p",(void*)g_sockVtHeap,(unsigned long long)svt,(unsigned long long)(svt-g_base),(void*)g_bsVtHeap);
 }
 
+// ---- game-server cipher trace (with the network log, OW174_NETLOG=1) ----
+// The game seals and opens its game-server UDP packets with an AES-GCM cipher object whose vtable is at
+// GCM_VT_RVA: slot 1 = open (0x3FB740), slot 2 = seal (0x3FB2E0) (see ow174/matches/gamecrypto.py). Like the
+// byte-streams above, each such object found on the heap gets a copy of that vtable whose open/seal log
+// every call and then call the game's own function. The game's code and its image are not modified.
+// The log answers: does the game try to OPEN our replies at all, does the open succeed (return value), and
+// which game functions call seal/open (return addresses as RVAs, for the disassembly).
+static const u64 GCM_VT_RVA=0x25F5BD0, GCM_OPEN_RVA=0x3FB740, GCM_SEAL_RVA=0x3FB2E0;
+typedef u64 (*CipherFn)(void*,u64,u64,u64,u64,u64,u64,u64,u64,u64);
+static CipherFn o_gcmOpen=nullptr, o_gcmSeal=nullptr;
+static u64 g_gcmVA=0; static u64* g_gcmVtHeap=nullptr; static bool g_gcmOff=false;
+static volatile LONG g_gcmOpen=0,g_gcmSeal=0,g_gcmSwaps=0;
+static bool g_netlog=false;   // set by netInit() below
+
+static int safeCopy(u8* dst,u64 src,int n){
+    if(src<0x10000) return 0;
+    __try{ memcpy(dst,(const void*)src,n); }__except(EXCEPTION_EXECUTE_HANDLER){ return 0; }
+    return n;
+}
+static void hexLine(char* out,size_t cap,const u8* p,int n){
+    size_t m=0; out[0]=0;
+    for(int i=0;i<n&&m+4<cap;i++){ int r=snprintf(out+m,cap-m,"%02X",p[i]); if(r<=0)break; m+=r; }
+}
+struct GcmSnap{ bool ok[10]; u8 bytes[10][48]; };
+static void gcmSnap(GcmSnap& s,const u64* a){
+    for(int i=0;i<10;i++) s.ok[i]=safeCopy(s.bytes[i],a[i],48)==48;
+}
+static void gcmLog(const char* what,LONG n,void* self,const u64* a,const GcmSnap& before,u64 ret,void* caller){
+    if(n>80 && (n%200)!=0) return;
+    u64 c=(u64)caller;
+    L("GCM %s #%ld self=%p ret=%llX caller=%s%llX",what,n,self,(unsigned long long)ret,
+      inImage(c)?"rva ":"",(unsigned long long)(inImage(c)?c-g_base:c));
+    L("  args a2..a10: %llX %llX %llX %llX %llX %llX %llX %llX %llX",
+      (unsigned long long)a[1],(unsigned long long)a[2],(unsigned long long)a[3],(unsigned long long)a[4],
+      (unsigned long long)a[5],(unsigned long long)a[6],(unsigned long long)a[7],(unsigned long long)a[8],
+      (unsigned long long)a[9]);
+    char h[104];
+    for(int i=1;i<10;i++) if(before.ok[i]){ hexLine(h,sizeof h,before.bytes[i],48); L("  a%d-> %s",i+1,h); }
+    if(n<=3){                                   // who calls it: the packet send / receive functions
+        void* frames[16]; USHORT got=RtlCaptureStackBackTrace(1,16,frames,nullptr);
+        char line[400]; size_t m=0; line[0]=0;
+        for(USHORT i=0;i<got&&m+24<sizeof line;i++){
+            u64 f=(u64)frames[i];
+            int r=inImage(f)?snprintf(line+m,sizeof line-m,"%llX ",(unsigned long long)(f-g_base))
+                            :snprintf(line+m,sizeof line-m,"(%llX) ",(unsigned long long)f);
+            if(r<=0)break; m+=r;
+        }
+        L("  stack (rva): %s",line);
+    }
+}
+static u64 hk_gcmOpen(void* self,u64 a2,u64 a3,u64 a4,u64 a5,u64 a6,u64 a7,u64 a8,u64 a9,u64 a10){
+    u64 a[10]={(u64)self,a2,a3,a4,a5,a6,a7,a8,a9,a10}; GcmSnap s; gcmSnap(s,a);
+    u64 r=o_gcmOpen(self,a2,a3,a4,a5,a6,a7,a8,a9,a10);
+    gcmLog("open",InterlockedIncrement(&g_gcmOpen),self,a,s,r,_ReturnAddress());
+    return r;
+}
+static u64 hk_gcmSeal(void* self,u64 a2,u64 a3,u64 a4,u64 a5,u64 a6,u64 a7,u64 a8,u64 a9,u64 a10){
+    u64 a[10]={(u64)self,a2,a3,a4,a5,a6,a7,a8,a9,a10}; GcmSnap s; gcmSnap(s,a);
+    u64 r=o_gcmSeal(self,a2,a3,a4,a5,a6,a7,a8,a9,a10);
+    gcmLog("seal",InterlockedIncrement(&g_gcmSeal),self,a,s,r,_ReturnAddress());
+    return r;
+}
+// Build the logging vtable once the game's vtable holds the expected functions (checked, so a different
+// build is left alone instead of being called through the wrong slots).
+static bool gcmReady(){
+    if(g_gcmVtHeap) return true;
+    if(g_gcmOff||!g_netlog) return false;
+    u64 vt=g_base+GCM_VT_RVA, open=rd64((void*)(vt+8),0), seal=rd64((void*)(vt+16),0);
+    if(!open&&!seal) return false;                 // not readable yet
+    if(open!=g_base+GCM_OPEN_RVA||seal!=g_base+GCM_SEAL_RVA){
+        // The game decrypts parts of itself after it starts, so keep checking for a while before giving up.
+        static int misses=0;
+        if(++misses==1||misses==2000)
+            L("GCM trace %s: vtable %llX holds open=%llX seal=%llX, not the 1.74 functions",misses==1?"waiting":"off",
+              (unsigned long long)GCM_VT_RVA,(unsigned long long)(open-g_base),(unsigned long long)(seal-g_base));
+        if(misses>=2000) g_gcmOff=true;
+        return false;
+    }
+    u64* heap=(u64*)VirtualAlloc(NULL,VT_COPY*8,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE);
+    if(!heap){ g_gcmOff=true; return false; }
+    for(int i=0;i<VT_COPY;i++) heap[i]=rd64((void*)(vt+i*8),0);
+    o_gcmOpen=(CipherFn)open; o_gcmSeal=(CipherFn)seal;
+    heap[1]=(u64)&hk_gcmOpen; heap[2]=(u64)&hk_gcmSeal;
+    g_gcmVA=vt; g_gcmVtHeap=heap;
+    L("GCM trace on: AES-GCM cipher objects (vtable rva %llX) will log open/seal",(unsigned long long)GCM_VT_RVA);
+    return true;
+}
+
 static void scan(){
+    bool gcm=gcmReady();
     SYSTEM_INFO si;GetSystemInfo(&si);u64 a=(u64)si.lpMinimumApplicationAddress,mx=(u64)si.lpMaximumApplicationAddress;MEMORY_BASIC_INFORMATION m;
     while(a<mx&&VirtualQuery((void*)a,&m,sizeof m)){
         u64 rb=(u64)m.BaseAddress,rs=m.RegionSize;
         if(m.State==MEM_COMMIT&&m.Type==MEM_PRIVATE&&inHeap(rb)&&(m.Protect&(PAGE_READWRITE|PAGE_EXECUTE_READWRITE))&&!(m.Protect&PAGE_GUARD)&&rs<=0x8000000){
             for(u64 p=rb;p+0xC0<=rb+rs;p+=8){
                 u64 vt;__try{vt=*(volatile u64*)p;}__except(EXCEPTION_EXECUTE_HANDLER){continue;}
+                if(gcm&&vt==g_gcmVA){                          // an AES-GCM cipher: route it through the logger
+                    LONG k=InterlockedIncrement(&g_gcmSwaps);
+                    __try{ *(volatile u64*)p=(u64)g_gcmVtHeap; }__except(EXCEPTION_EXECUTE_HANDLER){}
+                    if(k<=16) L("GCM cipher object %016llX traced (#%ld)",(unsigned long long)p,k);
+                    continue;
+                }
                 if(vt!=g_bsVA) continue;                       // only unswapped byte-streams
                 u64 bs=p; u64 sock=rd64((void*)(bs+0x48),0);
                 if(!inHeap(sock)) continue;
@@ -181,7 +278,7 @@ static connect_t o_connect=nullptr; static wsaconnect_t o_wsaconnect=nullptr;
 static sendto_t o_sendto=nullptr; static wsasendto_t o_wsasendto=nullptr;
 static recvfrom_t o_recvfrom=nullptr; static wsarecvfrom_t o_wsarecvfrom=nullptr;
 static volatile LONG g_udpData=0;
-static bool g_netlog=false; static volatile LONG g_netPatched=0;
+static volatile LONG g_netPatched=0;   // g_netlog is declared with the cipher trace above
 
 struct NetSeen{ char key[96]; LONG count; };
 static NetSeen g_seen[256]; static int g_nSeen=0; static CRITICAL_SECTION g_netCs;
@@ -393,7 +490,7 @@ static DWORD WINAPI worker(LPVOID){
     netInit();
     for(int loop=0;;loop++){
         scan();
-        if((loop%80)==0)L("[poll] loop=%d swaps=%ld send=%ld recv=%ld stateCalls=%ld relays=%d err=%ld net=%ld",loop,g_swaps,g_send,g_recv,g_stateCalls,g_nRelays,g_relayErr,g_netPatched);
+        if((loop%80)==0)L("[poll] loop=%d swaps=%ld send=%ld recv=%ld stateCalls=%ld relays=%d err=%ld net=%ld gcm=%ld/%ld/%ld",loop,g_swaps,g_send,g_recv,g_stateCalls,g_nRelays,g_relayErr,g_netPatched,g_gcmSwaps,g_gcmSeal,g_gcmOpen);
         Sleep(8);
     }
     return 0;

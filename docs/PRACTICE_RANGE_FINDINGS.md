@@ -62,7 +62,29 @@ up" was not a reaction to a reply**. Measured from the 20600 handoff to the game
 The 0.74 s pause in `6b6a7071` was most likely an unrelated hitch. What is left: the only run that
 lasted longer is the one where every reply was a valid packet carrying the game's own connect command.
 
-### Next runs: `PRACTICE_REPLIES.bat`, test 1 (`silent`) then test 2 (`echo_ce`)
+### Result of `silent` (`45aea6e5`) and `echo_ce` (`7595fb9d`)
+
+| run | handoff -> 21802 |
+|---|---|
+| silent (no replies) | 09:36:26.013 -> 33.469 = **7.46 s** |
+| echo_ce (the game's connect frame back, sealed `+0xCE` / `+0x18`) | 09:37:26.671 -> 34.061 = **7.39 s** |
+
+No difference. Also: the only long gap in the game's packets lines up with its 21802 each time
+(silent 33.06->33.47, echo 33.19->34.06), so a pause simply marks the moment it gives up. From
+outside, a sealed echo looks exactly like silence, which cannot tell "wrong key" from "right key,
+command ignored". The ~12 s of `713ac6d1` came from its zero-key handoff, not its replies.
+
+### Next: trace the game's own seal/open calls (relay)
+
+With the network log on (any `--experiment` run), the relay now also finds every AES-GCM cipher object
+(vtable rva `0x25F5BD0`) on the heap and points it at a copy of its vtable whose open/seal log each call
+and then call the game's function; the game's code is not modified. `relay/log/wfd.log` gets `GCM seal`
+/ `GCM open` lines with the return value, the nine arguments, 48 bytes behind each pointer argument, and
+the callers' RVAs for the first calls. That answers directly whether the game tries to open our replies,
+whether the open succeeds, and which functions to disassemble next. It needs a relay DLL built from this
+source (`relay\build.bat`, or the CI artifact).
+
+### Earlier: `PRACTICE_REPLIES.bat`, test 1 (`silent`) then test 2 (`echo_ce`)
 
 Same `practice_keys` handoff both times. `silent` answers nothing (the keyed timing baseline).
 `echo_ce` answers every packet with the game's own connect frame, sealed with key `+0xCE` and the

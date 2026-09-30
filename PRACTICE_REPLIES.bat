@@ -3,7 +3,7 @@ rem Practice Range test, retail mode with the relay: the practice_keys handoff, 
 rem answers with the reply plan you pick (experiments\replies\*.json).
 title Overwatch 1.74 lobby server - Practice Range replies
 cd /d "%~dp0"
-where py >/dev/null 2>/dev/null || (
+where py >nul 2>nul || (
   echo Python is not installed. Install Python 3.10 or newer ^(64-bit^) from python.org, then start again.
   start "" https://www.python.org/downloads/windows/
   pause

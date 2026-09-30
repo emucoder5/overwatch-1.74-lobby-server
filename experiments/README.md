@@ -18,6 +18,7 @@ plan.
 | `practice` | searching state (53000), create-game reply (23320), handoff (20600) with the address in host byte order, then idle again after 20 s if nothing connected |
 | `practice_net_order` | the same, with the address and port in network byte order |
 | `practice_handoff_only` | only the handoff (20600), to retest the earlier "no traffic" result |
+| `practice_enter` | the `practice` messages that reached "Entering Practice Range", with no reset to idle, and a 90 s wait |
 | `practice_found_sweep` | searching, then 8 candidate "game ready" messages, each followed by the handoff |
 | `practice_state_sweep` | the searching-state message (53000) with states 1 to 9, to see which ones the game accepts (its 52903 answer) |
 

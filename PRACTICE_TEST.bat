@@ -8,5 +8,5 @@ where py >nul 2>nul || (
   pause
   exit /b 1
 )
-py -3 -B -m ow174 --mode retail --experiment practice_found_sweep %*
+py -3 -B -m ow174 --mode retail --experiment practice_enter %*
 pause

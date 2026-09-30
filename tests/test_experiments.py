@@ -32,6 +32,7 @@ SHIPPED_PLANS = (
     "practice_handoff_only",
     "practice_state_sweep",
     "practice_found_sweep",
+    "practice_enter",
 )
 
 

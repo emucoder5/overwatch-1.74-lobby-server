@@ -11,6 +11,10 @@ exception handler. No game byte changes. Same switch (`PRACTICE_REPLIES.bat` opt
 `GCM decrypt AUTH-OK` / `AUTH-FAIL` lines in `wfd.log`. If the game's protection checks the debug
 registers, it may exit or crash with the trace on; that result is worth reporting too.
 
+It did: with breakpoints set at launch (15 threads within 1.3 s), the game closed about 2 s later, before
+the menu, twice. The trace now waits until the game sends its first packet to the game server
+(UDP 3730-3749), so nothing is armed while the game starts up.
+
 ## Update (2026-09-30): the "token" is an AES-256-GCM tag, and the key comes from the handoff
 
 The responder run (`logs/matches/713ac6d1fd11486e932ac7ed03e46d59`) plus the new `recvfrom` hook settled

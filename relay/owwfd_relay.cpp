@@ -142,6 +142,9 @@ static void ensureVts(u64 svt){
 // No byte of the game, no object and no vtable is touched. Off unless OW174_GCM_TRACE=1.
 static const u64 GCM_OPEN_RVA=0x24D2770 /*GcmDecrypt*/, GCM_SEAL_RVA=0x24D2500 /*GcmEncrypt*/;
 static volatile LONG g_gcmOpenN=0,g_gcmSealN=0; static bool g_gcmTrace=false; static volatile LONG g_gcmHooked=0;
+// Armed only once the game dials the game server: breakpoints set at launch killed the game within ~2 s
+// (its protection checks at startup), so nothing is set before Practice Range is clicked.
+static volatile bool g_gcmGo=false;
 static bool g_netlog=false;   // set by netInit() below
 
 static int safeCopy(u8* dst,u64 src,int n){
@@ -233,7 +236,7 @@ static int gcmArmThreads(){
 // share it. Checked before arming, so a different build -- or code not decrypted yet -- is left alone.
 static const u8 GCM_PROLOGUE[11]={0x40,0x55,0x56,0x57,0x41,0x56,0x41,0x57,0x48,0x81,0xEC};
 static void gcmTryHook(){
-    if(!g_gcmTrace) return;
+    if(!g_gcmTrace||!g_gcmGo) return;
     static int tries=0; tries++;
     if(!g_gcmHooked){
         u8 a[11],b[11];
@@ -349,6 +352,9 @@ static void netLog(const char* key,const char* detail){
     if(count==1||count%1000==0) L("NET %s %s (call #%ld)",key,detail,count);
 }
 static void netNote(const char* fn,SOCKET s,const sockaddr* to,int len,long bytes){
+    if(to&&len>=(int)sizeof(sockaddr_in)&&to->sa_family==AF_INET){   // the game dials our game server (3730+)
+        u16 p=ntohs(((const sockaddr_in*)to)->sin_port); if(p>=3730&&p<3750) g_gcmGo=true;
+    }
     char addr[64]; formatAddr(to,len,addr,sizeof addr);
     char key[96]; snprintf(key,sizeof key,"%s %s -> %s",fn,socketKind(s),addr);
     char detail[64]; snprintf(detail,sizeof detail,"socket=%llu bytes=%ld",(unsigned long long)s,bytes);
@@ -519,7 +525,7 @@ static DWORD WINAPI worker(LPVOID){
     L("==== owwfd_relay (plaintext pipe -> 127.0.0.1:%u) base=%016llX bsVt=%016llX ====",RELAY_PORT,(unsigned long long)g_base,(unsigned long long)g_bsVA);
     netInit();
     { wchar_t f[8]={0}; DWORD n=GetEnvironmentVariableW(L"OW174_GCM_TRACE",f,8); g_gcmTrace=(n>0&&n<8&&f[0]==L'1'); }
-    if(g_gcmTrace) L("GCM trace requested (OW174_GCM_TRACE=1): will set hardware breakpoints on GcmEncrypt/GcmDecrypt");
+    if(g_gcmTrace) L("GCM trace requested (OW174_GCM_TRACE=1): will set hardware breakpoints on GcmEncrypt/GcmDecrypt when the game dials the game server");
     for(int loop=0;;loop++){
         scan();
         if((loop%80)==0)L("[poll] loop=%d swaps=%ld send=%ld recv=%ld stateCalls=%ld relays=%d err=%ld net=%ld gcm=%ld/%ld/%ld",loop,g_swaps,g_send,g_recv,g_stateCalls,g_nRelays,g_relayErr,g_netPatched,g_gcmHooked,g_gcmSealN,g_gcmOpenN);

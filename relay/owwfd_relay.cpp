@@ -10,7 +10,7 @@
 // We swap [bs+0x48].send/recv to a byte-pipe: send -> our TCP socket to 127.0.0.1:21119 (RELAY_PORT, the
 // Python BGS server in ow174/bnet, which does the WS upgrade + BGS), recv <- that socket. TLS never runs.
 // Optional: with OW174_NETLOG=1 it also logs every address the game dials (see "network log" below), and
-// every seal/open of a game-server packet (see "game-server cipher trace").
+// with OW174_GCM_TRACE=1 it also logs every seal/open of a game-server packet (see "cipher trace").
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -127,19 +127,21 @@ static void ensureVts(u64 svt){
     L("built vts: sockHeap=%p (from %llX rva %llX) bsHeap=%p",(void*)g_sockVtHeap,(unsigned long long)svt,(unsigned long long)(svt-g_base),(void*)g_bsVtHeap);
 }
 
-// ---- game-server cipher trace (with the network log, OW174_NETLOG=1) ----
-// The game seals and opens its game-server UDP packets with an AES-GCM cipher object whose vtable is at
-// GCM_VT_RVA: slot 1 = open (0x3FB740), slot 2 = seal (0x3FB2E0) (see ow174/matches/gamecrypto.py). Like the
-// byte-streams above, each such object found on the heap gets a copy of that vtable whose open/seal log
-// every call and then call the game's own function. The game's code and its image are not modified.
-// The log answers: does the game try to OPEN our replies at all, does the open succeed (return value), and
-// which game functions call seal/open (return addresses as RVAs, for the disassembly).
-static const u64 GCM_VT_RVA=0x25F5BD0, GCM_OPEN_RVA=0x3FB740, GCM_SEAL_RVA=0x3FB2E0;
+// ---- game-server cipher trace (opt-in: OW174_GCM_TRACE=1) ----
+// The game seals and opens its game-server UDP packets with SymCrypt AES-GCM through two wrapper functions,
+// seal 0x3FB2E0 and open 0x3FB740 (see ow174/matches/gamecrypto.py). This inline-hooks those two functions
+// in place -- exactly the mechanism the Winsock log below uses -- so each call logs its arguments, the 48
+// bytes behind each pointer argument, its return value and its caller, then runs the game's own code.
+// NOTHING ELSE is touched: no object and no vtable pointer is modified, so the game's own checks still see
+// the real cipher objects. (An earlier version swapped each cipher object's vtable pointer; the game
+// treats that pointer as the object's type identity, so swapping it crashed the game. Inline-hooking the
+// two functions avoids that entirely.) Off unless OW174_GCM_TRACE=1: instrumenting the game is invasive.
+static const u64 GCM_OPEN_RVA=0x3FB740, GCM_SEAL_RVA=0x3FB2E0;
 typedef u64 (*CipherFn)(void*,u64,u64,u64,u64,u64,u64,u64,u64,u64);
 static CipherFn o_gcmOpen=nullptr, o_gcmSeal=nullptr;
-static u64 g_gcmVA=0; static u64* g_gcmVtHeap=nullptr; static bool g_gcmOff=false;
-static volatile LONG g_gcmOpen=0,g_gcmSeal=0,g_gcmSwaps=0;
+static volatile LONG g_gcmOpenN=0,g_gcmSealN=0; static bool g_gcmTrace=false; static volatile LONG g_gcmHooked=0;
 static bool g_netlog=false;   // set by netInit() below
+static bool inlineHook(u8* fn,void* hook,void** original,u8* trampoline,const char* name);  // defined below
 
 static int safeCopy(u8* dst,u64 src,int n){
     if(src<0x10000) return 0;
@@ -180,55 +182,46 @@ static void gcmLog(const char* what,LONG n,void* self,const u64* a,const GcmSnap
 static u64 hk_gcmOpen(void* self,u64 a2,u64 a3,u64 a4,u64 a5,u64 a6,u64 a7,u64 a8,u64 a9,u64 a10){
     u64 a[10]={(u64)self,a2,a3,a4,a5,a6,a7,a8,a9,a10}; GcmSnap s; gcmSnap(s,a);
     u64 r=o_gcmOpen(self,a2,a3,a4,a5,a6,a7,a8,a9,a10);
-    gcmLog("open",InterlockedIncrement(&g_gcmOpen),self,a,s,r,_ReturnAddress());
+    gcmLog("open",InterlockedIncrement(&g_gcmOpenN),self,a,s,r,_ReturnAddress());
     return r;
 }
 static u64 hk_gcmSeal(void* self,u64 a2,u64 a3,u64 a4,u64 a5,u64 a6,u64 a7,u64 a8,u64 a9,u64 a10){
     u64 a[10]={(u64)self,a2,a3,a4,a5,a6,a7,a8,a9,a10}; GcmSnap s; gcmSnap(s,a);
     u64 r=o_gcmSeal(self,a2,a3,a4,a5,a6,a7,a8,a9,a10);
-    gcmLog("seal",InterlockedIncrement(&g_gcmSeal),self,a,s,r,_ReturnAddress());
+    gcmLog("seal",InterlockedIncrement(&g_gcmSealN),self,a,s,r,_ReturnAddress());
     return r;
 }
-// Build the logging vtable once the game's vtable holds the expected functions (checked, so a different
-// build is left alone instead of being called through the wrong slots).
-static bool gcmReady(){
-    if(g_gcmVtHeap) return true;
-    if(g_gcmOff||!g_netlog) return false;
-    u64 vt=g_base+GCM_VT_RVA, open=rd64((void*)(vt+8),0), seal=rd64((void*)(vt+16),0);
-    if(!open&&!seal) return false;                 // not readable yet
-    if(open!=g_base+GCM_OPEN_RVA||seal!=g_base+GCM_SEAL_RVA){
-        // The game decrypts parts of itself after it starts, so keep checking for a while before giving up.
+// The 1.74 seal/open prologue: 7 one-byte pushes, then `mov eax, 0x22D0`. Checked before hooking, so a
+// different build -- or code the game has not decrypted yet -- is left alone instead of being patched.
+static const u8 GCM_PROLOGUE[11]={0x53,0x55,0x56,0x57,0x41,0x54,0x41,0x56,0x41,0x57,0xB8};
+static u8* g_gcmPool=nullptr;
+static void gcmTryHook(){
+    if(!g_gcmTrace||g_gcmHooked) return;
+    u8* seal=(u8*)(g_base+GCM_SEAL_RVA); u8* open=(u8*)(g_base+GCM_OPEN_RVA);
+    u8 hs[11],ho[11];
+    if(safeCopy(hs,(u64)seal,11)!=11||safeCopy(ho,(u64)open,11)!=11) return;
+    if(memcmp(hs,GCM_PROLOGUE,11)||memcmp(ho,GCM_PROLOGUE,11)){
         static int misses=0;
-        if(++misses==1||misses==2000)
-            L("GCM trace %s: vtable %llX holds open=%llX seal=%llX, not the 1.74 functions",misses==1?"waiting":"off",
-              (unsigned long long)GCM_VT_RVA,(unsigned long long)(open-g_base),(unsigned long long)(seal-g_base));
-        if(misses>=2000) g_gcmOff=true;
-        return false;
+        if(++misses==1||misses==2000) L("GCM trace: seal/open not the 1.74 prologue yet (waiting for decrypt)");
+        if(misses>=2000){ g_gcmTrace=false; L("GCM trace off: seal/open never matched the 1.74 prologue"); }
+        return;
     }
-    u64* heap=(u64*)VirtualAlloc(NULL,VT_COPY*8,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE);
-    if(!heap){ g_gcmOff=true; return false; }
-    for(int i=0;i<VT_COPY;i++) heap[i]=rd64((void*)(vt+i*8),0);
-    o_gcmOpen=(CipherFn)open; o_gcmSeal=(CipherFn)seal;
-    heap[1]=(u64)&hk_gcmOpen; heap[2]=(u64)&hk_gcmSeal;
-    g_gcmVA=vt; g_gcmVtHeap=heap;
-    L("GCM trace on: AES-GCM cipher objects (vtable rva %llX) will log open/seal",(unsigned long long)GCM_VT_RVA);
-    return true;
+    if(!g_gcmPool) g_gcmPool=(u8*)VirtualAlloc(nullptr,256,MEM_COMMIT|MEM_RESERVE,PAGE_EXECUTE_READWRITE);
+    if(!g_gcmPool){ g_gcmTrace=false; return; }
+    g_gcmHooked=1;   // set first: the inline-hooked function must not be re-hooked mid-install
+    bool a=inlineHook(seal,(void*)&hk_gcmSeal,(void**)&o_gcmSeal,g_gcmPool,"GCM seal");
+    bool b=inlineHook(open,(void*)&hk_gcmOpen,(void**)&o_gcmOpen,g_gcmPool+64,"GCM open");
+    L("GCM trace %s: seal and open log every call (in-place hook, no vtable touched)",(a&&b)?"on":"PARTIAL");
 }
 
 static void scan(){
-    bool gcm=gcmReady();
+    gcmTryHook();
     SYSTEM_INFO si;GetSystemInfo(&si);u64 a=(u64)si.lpMinimumApplicationAddress,mx=(u64)si.lpMaximumApplicationAddress;MEMORY_BASIC_INFORMATION m;
     while(a<mx&&VirtualQuery((void*)a,&m,sizeof m)){
         u64 rb=(u64)m.BaseAddress,rs=m.RegionSize;
         if(m.State==MEM_COMMIT&&m.Type==MEM_PRIVATE&&inHeap(rb)&&(m.Protect&(PAGE_READWRITE|PAGE_EXECUTE_READWRITE))&&!(m.Protect&PAGE_GUARD)&&rs<=0x8000000){
             for(u64 p=rb;p+0xC0<=rb+rs;p+=8){
                 u64 vt;__try{vt=*(volatile u64*)p;}__except(EXCEPTION_EXECUTE_HANDLER){continue;}
-                if(gcm&&vt==g_gcmVA){                          // an AES-GCM cipher: route it through the logger
-                    LONG k=InterlockedIncrement(&g_gcmSwaps);
-                    __try{ *(volatile u64*)p=(u64)g_gcmVtHeap; }__except(EXCEPTION_EXECUTE_HANDLER){}
-                    if(k<=16) L("GCM cipher object %016llX traced (#%ld)",(unsigned long long)p,k);
-                    continue;
-                }
                 if(vt!=g_bsVA) continue;                       // only unswapped byte-streams
                 u64 bs=p; u64 sock=rd64((void*)(bs+0x48),0);
                 if(!inHeap(sock)) continue;
@@ -488,9 +481,11 @@ static DWORD WINAPI worker(LPVOID){
     g_bsVA=g_base+BS_VT;
     L("==== owwfd_relay (plaintext pipe -> 127.0.0.1:%u) base=%016llX bsVt=%016llX ====",RELAY_PORT,(unsigned long long)g_base,(unsigned long long)g_bsVA);
     netInit();
+    { wchar_t f[8]={0}; DWORD n=GetEnvironmentVariableW(L"OW174_GCM_TRACE",f,8); g_gcmTrace=(n>0&&n<8&&f[0]==L'1'); }
+    if(g_gcmTrace) L("GCM trace requested (OW174_GCM_TRACE=1): will hook seal/open once decrypted");
     for(int loop=0;;loop++){
         scan();
-        if((loop%80)==0)L("[poll] loop=%d swaps=%ld send=%ld recv=%ld stateCalls=%ld relays=%d err=%ld net=%ld gcm=%ld/%ld/%ld",loop,g_swaps,g_send,g_recv,g_stateCalls,g_nRelays,g_relayErr,g_netPatched,g_gcmSwaps,g_gcmSeal,g_gcmOpen);
+        if((loop%80)==0)L("[poll] loop=%d swaps=%ld send=%ld recv=%ld stateCalls=%ld relays=%d err=%ld net=%ld gcm=%ld/%ld/%ld",loop,g_swaps,g_send,g_recv,g_stateCalls,g_nRelays,g_relayErr,g_netPatched,g_gcmHooked,g_gcmSealN,g_gcmOpenN);
         Sleep(8);
     }
     return 0;

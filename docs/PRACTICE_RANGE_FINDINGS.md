@@ -74,6 +74,20 @@ No difference. Also: the only long gap in the game's packets lines up with its 2
 outside, a sealed echo looks exactly like silence, which cannot tell "wrong key" from "right key,
 command ignored". The ~12 s of `713ac6d1` came from its zero-key handoff, not its replies.
 
+### The cipher trace crashed the game (my bug), now fixed
+
+The first cipher trace swapped each AES-GCM cipher object's vtable pointer for a logging copy. The game
+uses that pointer as the object's type identity, so swapping it crashed the game as soon as Practice
+Range created the ciphers (capture `91967f65`: two ciphers created, game crashed, no seal/open logged).
+That was an instrumentation bug, not the game reacting to a reply. Because the trace turned on with the
+network log, every `--experiment` run crashed.
+
+Fixed two ways: the trace is now **off by default** (opt-in `OW174_GCM_TRACE=1`), and when on it
+**inline-hooks the two functions in place** (seal `0x3FB2E0`, open `0x3FB740`) the same way the Winsock
+log hooks ws2_32 -- no object or vtable pointer is touched, so the type check cannot fail. Both
+functions start with an identical 12-byte prologue (7 pushes + `mov eax,0x22D0`) with no relative call
+inside it, so the 12-byte patch is safe; the hook verifies those bytes before patching.
+
 ### Next: trace the game's own seal/open calls (relay)
 
 With the network log on (any `--experiment` run), the relay now also finds every AES-GCM cipher object

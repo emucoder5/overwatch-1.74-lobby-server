@@ -1,0 +1,138 @@
+{
+  "description": "State sweep: sends the searching-state message (53000) with states 1 to 9, 2.5 s apart, then back to idle (0). The game's answer (52903) to each is in the log.",
+  "on": [
+    "practice"
+  ],
+  "watch": 5,
+  "steps": [
+    {
+      "send": [
+        "1CFB43CD",
+        53000
+      ],
+      "after": 0,
+      "value": {
+        "+0x78": {
+          "+0x60": 1
+        },
+        "+0xE8": "$token"
+      }
+    },
+    {
+      "send": [
+        "1CFB43CD",
+        53000
+      ],
+      "after": 2.5,
+      "value": {
+        "+0x78": {
+          "+0x60": 2
+        },
+        "+0xE8": "$token"
+      }
+    },
+    {
+      "send": [
+        "1CFB43CD",
+        53000
+      ],
+      "after": 2.5,
+      "value": {
+        "+0x78": {
+          "+0x60": 3
+        },
+        "+0xE8": "$token"
+      }
+    },
+    {
+      "send": [
+        "1CFB43CD",
+        53000
+      ],
+      "after": 2.5,
+      "value": {
+        "+0x78": {
+          "+0x60": 4
+        },
+        "+0xE8": "$token"
+      }
+    },
+    {
+      "send": [
+        "1CFB43CD",
+        53000
+      ],
+      "after": 2.5,
+      "value": {
+        "+0x78": {
+          "+0x60": 5
+        },
+        "+0xE8": "$token"
+      }
+    },
+    {
+      "send": [
+        "1CFB43CD",
+        53000
+      ],
+      "after": 2.5,
+      "value": {
+        "+0x78": {
+          "+0x60": 6
+        },
+        "+0xE8": "$token"
+      }
+    },
+    {
+      "send": [
+        "1CFB43CD",
+        53000
+      ],
+      "after": 2.5,
+      "value": {
+        "+0x78": {
+          "+0x60": 7
+        },
+        "+0xE8": "$token"
+      }
+    },
+    {
+      "send": [
+        "1CFB43CD",
+        53000
+      ],
+      "after": 2.5,
+      "value": {
+        "+0x78": {
+          "+0x60": 8
+        },
+        "+0xE8": "$token"
+      }
+    },
+    {
+      "send": [
+        "1CFB43CD",
+        53000
+      ],
+      "after": 2.5,
+      "value": {
+        "+0x78": {
+          "+0x60": 9
+        },
+        "+0xE8": "$token"
+      }
+    },
+    {
+      "send": [
+        "1CFB43CD",
+        53000
+      ],
+      "after": 2.5,
+      "value": {
+        "+0x78": {
+          "+0x60": 0
+        }
+      }
+    }
+  ]
+}

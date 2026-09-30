@@ -18,6 +18,9 @@ plan.
 | `practice` | searching state (53000), create-game reply (23320), handoff (20600) with the address in host byte order, then idle again after 20 s if nothing connected |
 | `practice_net_order` | the same, with the address and port in network byte order |
 | `practice_handoff_only` | only the handoff (20600), to retest the earlier "no traffic" result |
+| `practice_state_sweep` | the searching-state message (53000) with states 1 to 9, to see which ones the game accepts (its 52903 answer) |
+
+`PRACTICE_TEST.bat` runs whichever plan is named on its `py` line.
 
 A plan is re-read on every request, so you can edit its JSON while the server runs. To try your own
 plan, copy one and start with `--experiment path\to\my_plan.json`. The field list and the

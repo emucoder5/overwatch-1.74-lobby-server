@@ -1,5 +1,5 @@
 @echo off
-rem Starts the server and the game with the Practice Range test (experiments\practice.json).
+rem Starts the server and the game with the Practice Range test (the plan named on the py line below, from the experiments folder).
 title Overwatch 1.74 lobby server - Practice Range test
 cd /d "%~dp0"
 where py >nul 2>nul || (
@@ -8,5 +8,5 @@ where py >nul 2>nul || (
   pause
   exit /b 1
 )
-py -3 -B -m ow174 --mode retail --experiment practice %*
+py -3 -B -m ow174 --mode retail --experiment practice_state_sweep %*
 pause

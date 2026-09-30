@@ -1,0 +1,309 @@
+{
+  "description": "Match-found sweep: searching state (53000=4), then 8 candidate 'game ready' messages (53003, 53004, 53005, 53006, 56200, 44201, 23304, 23310), 5 s apart, each followed by the handoff (20600); stops once the game sends UDP to the instance.",
+  "on": [
+    "practice"
+  ],
+  "watch": 10,
+  "steps": [
+    {
+      "send": [
+        "1CFB43CD",
+        53000
+      ],
+      "after": 0,
+      "value": {
+        "+0x78": {
+          "+0x60": 4
+        },
+        "+0xE8": "$token"
+      }
+    },
+    {
+      "send": [
+        "1CFB43CD",
+        53003
+      ],
+      "after": 1.0,
+      "unless_connected": true,
+      "value": {
+        "+0x78": {
+          "+0x0": [
+            "$token",
+            0
+          ]
+        },
+        "+0x88": "$token",
+        "+0x90": {
+          "+0x0": [
+            "$token",
+            0
+          ]
+        }
+      }
+    },
+    {
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 1.0,
+      "unless_connected": true,
+      "value": {
+        "+0x78": true,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$token"
+          },
+          "+0x28": "$ip_host",
+          "+0x2C": "$port_host"
+        }
+      }
+    },
+    {
+      "send": [
+        "1CFB43CD",
+        53004
+      ],
+      "after": 4.0,
+      "unless_connected": true,
+      "value": {
+        "+0x78": {
+          "+0x0": [
+            "$token",
+            0
+          ]
+        }
+      }
+    },
+    {
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 1.0,
+      "unless_connected": true,
+      "value": {
+        "+0x78": true,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$token"
+          },
+          "+0x28": "$ip_host",
+          "+0x2C": "$port_host"
+        }
+      }
+    },
+    {
+      "send": [
+        "1CFB43CD",
+        53005
+      ],
+      "after": 4.0,
+      "unless_connected": true,
+      "value": {
+        "+0x78": {
+          "+0x60": 4
+        },
+        "+0x128": true
+      }
+    },
+    {
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 1.0,
+      "unless_connected": true,
+      "value": {
+        "+0x78": true,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$token"
+          },
+          "+0x28": "$ip_host",
+          "+0x2C": "$port_host"
+        }
+      }
+    },
+    {
+      "send": [
+        "1CFB43CD",
+        53006
+      ],
+      "after": 4.0,
+      "unless_connected": true,
+      "value": {
+        "+0x78": {
+          "+0x0": [
+            "$token",
+            0
+          ]
+        }
+      }
+    },
+    {
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 1.0,
+      "unless_connected": true,
+      "value": {
+        "+0x78": true,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$token"
+          },
+          "+0x28": "$ip_host",
+          "+0x2C": "$port_host"
+        }
+      }
+    },
+    {
+      "send": [
+        "A1498A6A",
+        56200
+      ],
+      "after": 4.0,
+      "unless_connected": true,
+      "value": {
+        "+0x78": {
+          "+0x60": "$token"
+        }
+      }
+    },
+    {
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 1.0,
+      "unless_connected": true,
+      "value": {
+        "+0x78": true,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$token"
+          },
+          "+0x28": "$ip_host",
+          "+0x2C": "$port_host"
+        }
+      }
+    },
+    {
+      "send": [
+        "B4F8BC62",
+        44201
+      ],
+      "after": 4.0,
+      "unless_connected": true,
+      "value": {
+        "+0x78": {
+          "+0x48": "$token",
+          "+0x55": true
+        }
+      }
+    },
+    {
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 1.0,
+      "unless_connected": true,
+      "value": {
+        "+0x78": true,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$token"
+          },
+          "+0x28": "$ip_host",
+          "+0x2C": "$port_host"
+        }
+      }
+    },
+    {
+      "send": [
+        "21286B49",
+        23304
+      ],
+      "after": 4.0,
+      "unless_connected": true,
+      "value": {
+        "+0x78": {
+          "+0x78": "$token",
+          "+0x80": true
+        }
+      }
+    },
+    {
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 1.0,
+      "unless_connected": true,
+      "value": {
+        "+0x78": true,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$token"
+          },
+          "+0x28": "$ip_host",
+          "+0x2C": "$port_host"
+        }
+      }
+    },
+    {
+      "send": [
+        "21286B49",
+        23310
+      ],
+      "after": 4.0,
+      "unless_connected": true,
+      "value": {
+        "+0x78": {
+          "+0x0": [
+            "$token",
+            0
+          ]
+        },
+        "+0x88": {
+          "+0x78": "$token",
+          "+0x80": true
+        }
+      }
+    },
+    {
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 1.0,
+      "unless_connected": true,
+      "value": {
+        "+0x78": true,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$token"
+          },
+          "+0x28": "$ip_host",
+          "+0x2C": "$port_host"
+        }
+      }
+    },
+    {
+      "send": [
+        "1CFB43CD",
+        53000
+      ],
+      "after": 4.0,
+      "unless_connected": true,
+      "value": {
+        "+0x78": {
+          "+0x60": 0
+        }
+      }
+    }
+  ]
+}

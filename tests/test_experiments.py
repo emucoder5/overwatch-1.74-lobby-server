@@ -26,7 +26,13 @@ from ow174.matches.runtime import MatchManager
 CUSTOM = 0xA6E53896
 HANDOFF = 0x074DAD18
 PRACTICE_BODY = bytes.fromhex("020004000000")
-SHIPPED_PLANS = ("practice", "practice_net_order", "practice_handoff_only", "practice_state_sweep")
+SHIPPED_PLANS = (
+    "practice",
+    "practice_net_order",
+    "practice_handoff_only",
+    "practice_state_sweep",
+    "practice_found_sweep",
+)
 
 
 def write_plan(directory, steps, **extra):

@@ -15,6 +15,7 @@ from ow174.jam.codec import Schemas
 from ow174.lobby.experiments import (
     ExperimentRunner,
     PlanError,
+    build_value,
     load_plan,
     placeholders,
     resolve_plan_path,
@@ -33,6 +34,7 @@ SHIPPED_PLANS = (
     "practice_state_sweep",
     "practice_found_sweep",
     "practice_enter",
+    "practice_plain_host",
 )
 
 
@@ -60,6 +62,17 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(names["$port_host"], 0x0E92)
         self.assertEqual(names["$port_net"], 0x920E)
         self.assertEqual(names["$token"], 7)
+        self.assertEqual(names["$host_text"], list(b"127.0.0.1"))
+
+    def test_plain_host_handoff_carries_the_address_as_text(self):
+        plan = load_plan(resolve_plan_path("practice_plain_host"), self.schemas)
+        handoff = next(step for step in plan.steps if step.msg_id == 20600)
+        value = build_value(self.schemas, handoff, placeholders("127.0.0.1", 3730, 7))
+        body = self.schemas.encode(HANDOFF, 20600, value)
+        decoded = self.schemas.decode(HANDOFF, 20600, body)
+        self.assertFalse(decoded["+0x78"])
+        self.assertEqual(bytes(decoded["+0x80"]["+0x2E"]).rstrip(b"\0"), b"127.0.0.1")
+        self.assertEqual(decoded["+0x80"]["+0x2C"], 3730)
 
     def test_a_misspelled_field_is_refused(self):
         path = write_plan(self.tmp.name, [{"send": ["074DAD18", 20600], "value": {"+0x80": {"+0x2D": 1}}}])

@@ -20,6 +20,7 @@ plan.
 | `practice_handoff_only` | only the handoff (20600), to retest the earlier "no traffic" result |
 | `practice_enter` | the `practice` messages that reached "Entering Practice Range", with no reset to idle, and a 90 s wait |
 | `practice_found_sweep` | searching, then 8 candidate "game ready" messages, each followed by the handoff |
+| `practice_plain_host` | searching, create-game reply, then the handoff with its first field false (not encrypted) and the address as text in the 64-byte field; repeated at 20 s, 60 s wait |
 | `practice_state_sweep` | the searching-state message (53000) with states 1 to 9, to see which ones the game accepts (its 52903 answer) |
 
 `PRACTICE_TEST.bat` runs whichever plan is named on its `py` line.

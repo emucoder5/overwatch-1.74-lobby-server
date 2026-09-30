@@ -1,0 +1,80 @@
+{
+  "description": "Searching state (53000=4), create-game reply (23320), then the handoff (20600) with its first field false (payload not encrypted) and the address written as text in the 64-byte field at +0x2E; the handoff is repeated at 20 s, and the server waits 60 s for the game.",
+  "on": [
+    "practice"
+  ],
+  "watch": 60,
+  "steps": [
+    {
+      "send": [
+        "1CFB43CD",
+        53000
+      ],
+      "after": 0,
+      "value": {
+        "+0x78": {
+          "+0x60": 4
+        },
+        "+0xE8": "$token"
+      }
+    },
+    {
+      "send": [
+        "21286B49",
+        23320
+      ],
+      "after": 0.5,
+      "value": {
+        "+0x78": 0,
+        "+0x80": {
+          "+0x60": 4
+        },
+        "+0xE8": {
+          "+0x0": {
+            "+0x0": {
+              "+0x0": "$token"
+            }
+          }
+        }
+      }
+    },
+    {
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 0.5,
+      "unless_connected": true,
+      "value": {
+        "+0x78": false,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$token"
+          },
+          "+0x28": "$ip_host",
+          "+0x2C": "$port_host",
+          "+0x2E": "$host_text"
+        }
+      }
+    },
+    {
+      "send": [
+        "074DAD18",
+        20600
+      ],
+      "after": 20,
+      "unless_connected": true,
+      "value": {
+        "+0x78": false,
+        "+0x80": {
+          "+0x0": {
+            "+0x0": "$token"
+          },
+          "+0x28": "$ip_host",
+          "+0x2C": "$port_host",
+          "+0x2E": "$host_text"
+        }
+      }
+    }
+  ]
+}

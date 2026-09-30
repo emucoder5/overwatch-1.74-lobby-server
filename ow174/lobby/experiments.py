@@ -25,6 +25,7 @@ String values that start with "$" are replaced:
     $ip_net     the same address with its bytes swapped (127.0.0.1 -> 0x0100007F)
     $port_host  the instance UDP port
     $port_net   the port with its two bytes swapped
+    $host_text  the instance address as text ("127.0.0.1"), as a list of bytes for a u8[] field
     $token      a random 64-bit number, the same for every step of one run
 
 The plan is read again for every request, so it can be edited while the server runs. The results go
@@ -138,7 +139,7 @@ def load_plan(path: Path, schemas: "Schemas") -> Plan:
     return plan
 
 
-def placeholders(host: str, port: int, token: int) -> dict[str, int]:
+def placeholders(host: str, port: int, token: int) -> dict[str, int | list[int]]:
     packed = socket.inet_aton(host)
     return {
         "$ip_host": int.from_bytes(packed, "big"),
@@ -146,10 +147,11 @@ def placeholders(host: str, port: int, token: int) -> dict[str, int]:
         "$port_host": port,
         "$port_net": int.from_bytes(port.to_bytes(2, "big"), "little"),
         "$token": token,
+        "$host_text": list(host.encode("ascii")),
     }
 
 
-def _merge(base, override, names: dict[str, int], path: str):
+def _merge(base, override, names: dict, path: str):
     """Override fields of an empty message value. Unknown fields and placeholders are errors."""
     if isinstance(override, str) and override.startswith("$"):
         if override not in names:
@@ -171,7 +173,7 @@ def _merge(base, override, names: dict[str, int], path: str):
     return override
 
 
-def build_value(schemas: "Schemas", step: Step, names: dict[str, int]) -> dict:
+def build_value(schemas: "Schemas", step: Step, names: dict) -> dict:
     value = _merge(schemas.empty(step.crc, step.msg_id), copy.deepcopy(step.value), names, "")
     schemas.encode(step.crc, step.msg_id, value)  # raises on a value the message cannot carry
     return value
